@@ -1,0 +1,998 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>First Central - Authentication</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            /* Match global gradient background */
+            background: linear-gradient(135deg, #d6efff 0%, #ffe7c2 100%);
+            background-attachment: fixed;
+            margin: 0;
+        }
+
+        .main-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 250px;
+            background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            padding: 0;
+            position: fixed;
+            height: 100vh;
+            left: 0;
+            top: 0;
+            z-index: 1000;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-logo {
+            width: 100%;
+            max-width: 180px;
+            height: auto;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            background-color: #ecf0f1;
+            padding: 12px;
+        }
+
+        .sidebar-header h3 {
+            color: #3498db;
+            font-weight: 700;
+            font-size: 1.4rem;
+            margin-bottom: 5px;
+        }
+
+        .sidebar-header p {
+            color: #bdc3c7;
+            font-size: 0.9rem;
+        }
+
+        .sidebar-nav {
+            padding: 20px 0;
+        }
+
+        .nav-item {
+            margin: 0;
+        }
+
+        .nav-link {
+            display: block;
+            padding: 15px 25px;
+            color: #ecf0f1;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            border-left: 4px solid transparent;
+            font-weight: 500;
+        }
+
+        .nav-link:hover {
+            background: rgba(52, 152, 219, 0.1);
+            border-left-color: #3498db;
+            color: #3498db;
+            padding-left: 30px;
+        }
+
+        .nav-link.active {
+            background: rgba(52, 152, 219, 0.2);
+            border-left-color: #3498db;
+            color: #3498db;
+        }
+
+        .nav-link i {
+            margin-right: 12px;
+            width: 20px;
+            text-align: center;
+        }
+
+        /* Main Content Area */
+        .content-area {
+            margin-left: 250px;
+            width: calc(100vw - 250px);
+            height: 100vh;
+            /* Background only for the content area (not the sidebar) */
+            /* background: linear-gradient(135deg, #ffffff 0%, #ffa500 40%, #007bff 100%); */
+            position: relative;
+            overflow-y: auto;
+        }
+
+        /* Content Sections */
+        .content-section {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            position: relative;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        .content-section.fade-in {
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .section-content {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255,255,255,0.2);
+            max-width: 500px;
+            width: 100%;
+        }
+
+        /* Welcome Section — Landing Page Hero */
+        /* Make welcome section full-width and remove card appearance */
+        #welcome.content-section {
+            min-height: 100vh;
+            padding: 0;
+        }
+
+        #welcome .section-content {
+            max-width: none;
+            width: 100%;
+            border: none;
+            box-shadow: none;
+            background: transparent;
+            padding: 0;
+        }
+
+        .hero-section {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero-bg {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(1000px 500px at 80% 20%, rgba(0, 123, 255, 0.25), transparent 60%),
+                        radial-gradient(800px 400px at 0% 100%, rgba(255, 165, 0, 0.25), transparent 60%),
+                        linear-gradient(135deg, #ffffff 0%, rgba(255, 165, 0, 0.35) 35%, rgba(0, 123, 255, 0.35) 100%);
+            pointer-events: none;
+        }
+
+        .hero-inner {
+            position: relative;
+            z-index: 1;
+            padding: 80px 40px;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 40px;
+            align-items: center;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .hero-text h1 {
+            color: #12263a;
+            font-size: 3rem;
+            line-height: 1.15;
+            font-weight: 800;
+            margin-bottom: 18px;
+        }
+
+        .hero-text p {
+            color: #2f3d4a;
+            font-size: 1.15rem;
+            line-height: 1.75;
+            margin-bottom: 28px;
+        }
+
+        .hero-ctas {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+
+        .btn-welcome {
+            padding: 14px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            min-width: 160px;
+            justify-content: center;
+        }
+
+        .btn-primary-welcome {
+            background: linear-gradient(135deg, #007bff, #0056b3);
+            color: white;
+            box-shadow: 0 6px 18px rgba(0, 123, 255, 0.35);
+        }
+
+        .btn-primary-welcome:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 24px rgba(0, 123, 255, 0.45);
+        }
+
+        .btn-secondary-welcome {
+            background: linear-gradient(135deg, #6c757d, #495057);
+            color: white;
+            box-shadow: 0 6px 18px rgba(108, 117, 125, 0.35);
+        }
+
+        .btn-secondary-welcome:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 24px rgba(108, 117, 125, 0.45);
+        }
+
+        .hero-art {
+            position: relative;
+        }
+
+        .hero-card {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+            border: 1px solid rgba(255,255,255,0.6);
+            backdrop-filter: blur(10px);
+            padding: 24px;
+        }
+
+        .hero-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            margin-top: 12px;
+        }
+
+        .stat {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid #eef2f7;
+        }
+
+        .stat h4 {
+            margin: 0 0 6px 0;
+            font-size: 1rem;
+            color: #334155;
+            font-weight: 700;
+        }
+
+        .stat p {
+            margin: 0;
+            color: #64748b;
+            font-size: 0.95rem;
+        }
+
+        .hero-features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+            max-width: 1200px;
+            margin: 40px auto 0;
+        }
+
+        .feature {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 14px;
+            padding: 18px;
+            border: 1px solid rgba(255,255,255,0.6);
+            box-shadow: 0 12px 24px rgba(0,0,0,0.08);
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .feature i {
+            color: #007bff;
+            font-size: 1.25rem;
+            margin-top: 4px;
+        }
+
+        .feature h5 {
+            margin: 0 0 6px 0;
+            font-size: 1.05rem;
+            color: #1f2937;
+            font-weight: 700;
+        }
+
+        .feature p {
+            margin: 0;
+            color: #4b5563;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        /* Form Sections */
+        .form-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .form-header h2 {
+            color: #2c3e50;
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .form-header p {
+            color: #7f8c8d;
+            font-size: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            color: #2c3e50;
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 15px 20px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: rgba(255,255,255,0.9);
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 0.25rem rgba(52, 152, 219, 0.15);
+            background: white;
+        }
+
+        .btn-form {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(45deg, #3498db, #2980b9);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+        }
+
+        .btn-form:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(52, 152, 219, 0.4);
+        }
+
+        .form-links {
+            text-align: center;
+        }
+
+        .form-links a {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .form-links a:hover {
+            color: #2980b9;
+            text-decoration: underline;
+        }
+
+        /* Alert Styles */
+        .alert {
+            border-radius: 12px;
+            border: none;
+            margin-bottom: 20px;
+            padding: 15px;
+        }
+
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        /* Hidden sections */
+        .content-section {
+            display: none;
+        }
+
+        .content-section.active {
+            display: flex;
+        }
+
+        /* During scroll animation, show all sections stacked to enable smooth scrolling */
+        .content-area.scroll-mode .content-section {
+            display: flex !important;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 992px) {
+            .hero-grid {
+                grid-template-columns: 1fr;
+            }
+            .hero-inner {
+                padding: 60px 24px;
+            }
+            .hero-features {
+                grid-template-columns: 1fr 1fr;
+                padding: 0 24px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 200px;
+            }
+            
+            .content-area {
+                margin-left: 200px;
+                width: calc(100vw - 200px);
+                /* Gradient scales automatically; no extra background sizing needed */
+            }
+            
+            .sidebar-logo {
+                max-width: 150px;
+            }
+            
+            .section-content {
+                padding: 30px 20px;
+                margin: 20px;
+            }
+            
+            .hero-text h1 {
+                font-size: 2.2rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: relative;
+            }
+            
+            .content-area {
+                margin-left: 0;
+                width: 100vw;
+                /* Keep the same gradient for mobile */
+            }
+            
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .sidebar-header {
+                padding: 15px;
+            }
+            
+            .sidebar-logo {
+                max-width: 120px;
+                margin-bottom: 10px;
+            }
+            
+            .sidebar-nav {
+                display: flex;
+                overflow-x: auto;
+                padding: 10px 0;
+            }
+            
+            .nav-item {
+                flex-shrink: 0;
+            }
+            
+            .nav-link {
+                padding: 10px 20px;
+                white-space: nowrap;
+            }
+            
+            .section-content {
+                margin: 10px;
+                padding: 25px 15px;
+            }
+            
+            .hero-text h1 {
+                font-size: 1.9rem;
+            }
+            .hero-features {
+                grid-template-columns: 1fr;
+                padding: 0 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <!-- Sidebar Navigation -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <img src="{% static 'auto/images/FirstCentralAPPROVEDLogo.png' %}" alt="First Central Logo" class="sidebar-logo">
+            </div>
+            <nav class="sidebar-nav">
+                <div class="nav-item">
+                    <a href="#welcome" class="nav-link active" onclick="smoothScrollToSection(event, 'welcome')">
+                        <i class="fas fa-home"></i>Welcome
+                    </a>
+                </div>
+                <div class="nav-item">
+                    <a href="#login" class="nav-link" onclick="smoothScrollToSection(event, 'login')">
+                        <i class="fas fa-sign-in-alt"></i>Login
+                    </a>
+                </div>
+                <div class="nav-item">
+                    <a href="#register" class="nav-link" onclick="smoothScrollToSection(event, 'register')">
+                        <i class="fas fa-user-plus"></i>Register
+                    </a>
+                </div>
+                <div class="nav-item">
+                    <a href="#forgot" class="nav-link" onclick="smoothScrollToSection(event, 'forgot')">
+                        <i class="fas fa-key"></i>Forgot Password
+                    </a>
+                </div>
+            </nav>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="content-area">
+
+            <!-- Welcome Section -->
+            <section id="welcome" class="content-section active">
+                <div class="section-content">
+                    <div class="hero-section">
+                        <div class="hero-bg"></div>
+                        <div class="hero-inner">
+                             {% comment %}<div class="hero-grid">
+                                <div class="hero-text">
+                                    <h1>Welcome to ADL<br><span style="color: #3498db;">Automated Data Loader</span></h1>
+                                    <p>Streamline your credit bureau data processing with intelligent automation. Transform, validate, and format your data with enterprise-grade accuracy.</p>
+                                    <div class="hero-ctas">
+                                        <a href="#" onclick="smoothScrollToSection(event, 'login')" class="btn-welcome btn-primary-welcome">
+                                            <i class="fas fa-sign-in-alt me-2"></i>Get Started
+                                        </a>
+                                        <a href="#" onclick="smoothScrollToSection(event, 'register')" class="btn-welcome btn-secondary-welcome">
+                                            <i class="fas fa-user-plus me-2"></i>Create Account
+                                        </a>
+                                    </div>
+                                </div> {% endcomment %}
+                            <div class="hero-text" style="text-align: center; max-width: 800px; margin: 0 auto;">
+                                <h1>Welcome to ADL<br><span style="color: #3498db;">Automated Data Loader</span></h1>
+                                <p>Streamline your credit bureau data processing with intelligent automation. Transform, validate, and format your data with enterprise-grade accuracy.</p>
+                                <div class="hero-ctas" style="justify-content: center;">
+                                    <a href="#" onclick="smoothScrollToSection(event, 'login')" class="btn-welcome btn-primary-welcome">
+                                        <i class="fas fa-sign-in-alt me-2"></i>Get Started
+                                    </a>
+                                    <a href="#" onclick="smoothScrollToSection(event, 'register')" class="btn-welcome btn-secondary-welcome">
+                                        <i class="fas fa-user-plus me-2"></i>Create Account
+                                    </a>
+                                </div>
+                            </div>
+                                {% comment %} <div class="hero-art">
+                                    <div class="hero-card">
+                                        <h3 style="margin: 0 0 16px 0; color: #2c3e50; font-weight: 700;">
+                                            <i class="fas fa-chart-line" style="color: #3498db; margin-right: 8px;"></i>
+                                            Platform Highlights
+                                        </h3>
+                                        <div class="hero-stats">
+                                            <div class="stat">
+                                                <h4><i class="fas fa-bolt" style="color: #ffa500; margin-right: 6px;"></i>Smart Processing</h4>
+                                                <p>Data mapping & validation</p>
+                                            </div>
+                                            <div class="stat">
+                                                <h4><i class="fas fa-shield-alt" style="color: #3498db; margin-right: 6px;"></i>Secure</h4>
+                                                <p>Enterprise-grade security & encryption</p>
+                                            </div>
+                                            <div class="stat">
+                                                <h4><i class="fas fa-clock" style="color: #27ae60; margin-right: 6px;"></i>Real-time</h4>
+                                                <p>Live progress tracking & updates</p>
+                                            </div>
+                                            <div class="stat">
+                                                <h4><i class="fas fa-check-circle" style="color: #e74c3c; margin-right: 6px;"></i>Accurate</h4>
+                                                <p>99.9% data transformation accuracy</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hero-features">
+                                <div class="feature">
+                                    <i class="fas fa-exchange-alt"></i>
+                                    <div>
+                                        <h5>Intelligent Transformation</h5>
+                                        <p>Fuzzy matching, smart column mapping, and automated data cleaning</p>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <i class="fas fa-users"></i>
+                                    <div>
+                                        <h5>Multi-Entity Support</h5>
+                                        <p>Handle individual borrowers, corporate entities seamlessly</p>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <i class="fas fa-tasks"></i>
+                                    <div>
+                                        <h5>Progress Tracking</h5>
+                                        <p>Monitor every stage of processing with detailed activity logs</p>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <i class="fas fa-database"></i>
+                                    <div>
+                                        <h5>Credit Matching</h5>
+                                        <p>Automatically match credit records to borrowers with high accuracy</p>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <i class="fas fa-user-check"></i>
+                                    <div>
+                                        <h5>Human Verification</h5>
+                                        <p>Review and approve classification decisions for critical records</p>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <i class="fas fa-file-excel"></i>
+                                    <div>
+                                        <h5>Report Generation</h5>
+                                        <p>Generate detailed reports in excel formats for analysis and compliance</p>
+                                    </div>
+                                </div>
+                            </div> {% endcomment %}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Login Section -->
+            <section id="login" class="content-section">
+                <div class="section-content">
+                    <div class="form-header">
+                        <h2><i class="fas fa-sign-in-alt me-2"></i>Sign In</h2>
+                        <p>Enter your credentials to access your account</p>
+                    </div>
+
+                    {% if form.errors %}
+                        <div class="alert alert-danger">
+                            {% for field, errors in form.errors.items %}
+                                {% for error in errors %}
+                                    <div><i class="fas fa-exclamation-circle me-2"></i>{{ error }}</div>
+                                {% endfor %}
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+
+                    <form method="post" action="{% url 'acctmgt:login' %}">
+                        {% csrf_token %}
+                        <div class="form-group">
+                            <label for="id_username" class="form-label">
+                                <i class="fas fa-user me-2"></i>Username
+                            </label>
+                            <input type="text" name="username" class="form-control" id="id_username" 
+                                   placeholder="Enter your username" value="{{ username_prefill }}" required autofocus>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="id_password" class="form-label">
+                                <i class="fas fa-lock me-2"></i>Password
+                            </label>
+                            <input type="password" name="password" class="form-control" id="id_password" 
+                                   placeholder="Enter your password" required>
+                        </div>
+                        
+                        <button type="submit" class="btn-form">
+                            <i class="fas fa-sign-in-alt me-2"></i>Sign In
+                        </button>
+                        
+                        <input type="hidden" name="next" value="{{ next }}" />
+                        
+                        <div class="form-links">
+                            <a href="#" onclick="smoothScrollToSection(event, 'forgot')">
+                                <i class="fas fa-key me-1"></i>Forgot your password?
+                            </a>
+                            <br><br>
+                            <a href="#" onclick="smoothScrollToSection(event, 'register')">
+                                <i class="fas fa-user-plus me-1"></i>Don't have an account? Register here
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Register Section -->
+            <section id="register" class="content-section">
+                <div class="section-content">
+                    <div class="form-header">
+                        <h2><i class="fas fa-user-plus me-2"></i>Create Account</h2>
+                        <p>Join First Central and get started today</p>
+                    </div>
+
+                    <form method="post" action="{% url 'acctmgt:register' %}">
+                        {% csrf_token %}
+                        <div class="form-group">
+                            <label for="id_username" class="form-label">
+                                <i class="fas fa-user me-2"></i>Username
+                            </label>
+                            <input type="text" class="form-control" id="id_username" name="username" 
+                                   placeholder="Enter your username" required autofocus>
+                            {% if form.username.errors %}
+                                <div class="text-danger small mt-1">
+                                    {% for error in form.username.errors %}
+                                        <div>{{ error }}</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="id_password1" class="form-label">
+                                <i class="fas fa-lock me-2"></i>Password
+                            </label>
+                            <input type="password" class="form-control" id="id_password1" name="password1" 
+                                   placeholder="Enter your password" required>
+                            {% if form.password1.errors %}
+                                <div class="text-danger small mt-1">
+                                    {% for error in form.password1.errors %}
+                                        <div>{{ error }}</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="id_password2" class="form-label">
+                                <i class="fas fa-lock me-2"></i>Confirm Password
+                            </label>
+                            <input type="password" class="form-control" id="id_password2" name="password2" 
+                                   placeholder="Confirm your password" required>
+                            {% if form.password2.errors %}
+                                <div class="text-danger small mt-1">
+                                    {% for error in form.password2.errors %}
+                                        <div>{{ error }}</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        
+                        <button type="submit" class="btn-form">
+                            <i class="fas fa-user-plus me-2"></i>Create Account
+                        </button>
+                        
+                        <div class="form-links">
+                            <a href="#" onclick="smoothScrollToSection('login')">
+                                <i class="fas fa-sign-in-alt me-1"></i>Already have an account? Sign in here
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Forgot Password Section -->
+            <section id="forgot" class="content-section">
+                <div class="section-content">
+                    <div class="form-header">
+                        <h2><i class="fas fa-key me-2"></i>Reset Password</h2>
+                        <p>Enter your username to reset your password</p>
+                    </div>
+
+                    <form>
+                        <div class="form-group">
+                            <label for="forgot_username" class="form-label">
+                                <i class="fas fa-user me-2"></i>Username
+                            </label>
+                            <input type="text" class="form-control" id="forgot_username" name="username" required>
+                        </div>
+                        
+                        <button type="button" class="btn-form" onclick="handleForgotPassword()">
+                            <i class="fas fa-paper-plane me-2"></i>Send Reset Link
+                        </button>
+                        
+                        <div class="form-links">
+                            <a href="#" onclick="smoothScrollToSection(event, 'login')">
+                                <i class="fas fa-arrow-left me-1"></i>Back to Login
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function showSection(sectionId, navElement) {
+            const targetSection = document.getElementById(sectionId);
+            const contentArea = document.querySelector('.content-area');
+            
+            if (!targetSection) return;
+
+            // If target is already active, do nothing
+            if (targetSection.classList.contains('active')) return;
+
+            // Hide all sections with smooth transition
+            const sections = document.querySelectorAll('.content-section');
+            sections.forEach(section => {
+                section.classList.remove('active');
+            });
+
+            // Remove active class from all nav links
+            const navLinks = document.querySelectorAll('.nav-link');
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+            });
+
+            // Show target section with smooth transition
+            targetSection.classList.add('active');
+
+            // Add active class to clicked nav link
+            if (navElement) {
+                navElement.classList.add('active');
+            } else {
+                // If called programmatically, find the corresponding nav link
+                const correspondingNav = document.querySelector(`a[href="#${sectionId}"]`);
+                if (correspondingNav) {
+                    correspondingNav.classList.add('active');
+                }
+            }
+
+            // Ensure content area is at top without jarring movement
+            if (contentArea) {
+                contentArea.scrollTop = 0;
+            }
+        }
+
+        function smoothScrollToSection(ev, sectionId) {
+            // Prevent native anchor behavior to avoid double-scroll and hash-triggered reposition
+            if (ev && typeof ev.preventDefault === 'function') {
+                ev.preventDefault();
+            }
+            const contentArea = document.querySelector('.content-area');
+            const targetSection = document.getElementById(sectionId);
+            const currentActive = document.querySelector('.content-section.active');
+
+            if (!contentArea || !targetSection) return;
+
+            // If target is already active, do nothing
+            if (targetSection.classList.contains('active')) return;
+
+            // Enable scroll mode so sections stack vertically
+            contentArea.classList.add('scroll-mode');
+
+            // Calculate target position relative to content area
+            const startPosition = contentArea.scrollTop;
+            const targetPosition = targetSection.offsetTop;
+            const distance = targetPosition - startPosition;
+            const duration = 600; // Reduced duration for smoother feel
+            let startTime = null;
+
+            // Improved easing function for smoother transitions
+            function easeInOutCubic(t) {
+                return t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1;
+            }
+
+            function step(currentTime) {
+                if (startTime === null) startTime = currentTime;
+                const timeElapsed = currentTime - startTime;
+                const progress = Math.min(timeElapsed / duration, 1);
+                const eased = easeInOutCubic(progress);
+                
+                // Use smooth scrolling with requestAnimationFrame for better performance
+                const currentPosition = startPosition + distance * eased;
+                contentArea.scrollTop = currentPosition;
+
+                if (progress < 1) {
+                    requestAnimationFrame(step);
+                } else {
+                    // Finalize transition smoothly
+                    setTimeout(() => {
+                        // Remove scroll mode and update active states
+                        contentArea.classList.remove('scroll-mode');
+                        
+                        // Update active classes on sections
+                        document.querySelectorAll('.content-section').forEach(sec => sec.classList.remove('active'));
+                        targetSection.classList.add('active');
+
+                        // Update nav active state
+                        document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
+                        const correspondingNav = document.querySelector(`a[href="#${sectionId}"]`);
+                        if (correspondingNav) correspondingNav.classList.add('active');
+
+                        // Reset scroll position smoothly
+                        contentArea.scrollTo({ top: 0, behavior: 'auto' });
+
+                        // Update URL hash
+                        history.pushState(null, null, `#${sectionId}`);
+                    }, 50); // Small delay to ensure smooth transition completion
+                }
+            }
+
+            requestAnimationFrame(step);
+        }
+
+        function handleForgotPassword() {
+            alert('Password reset functionality will be implemented soon. Please contact support for assistance.');
+        }
+
+        // Add form field classes for Bootstrap styling
+        document.addEventListener('DOMContentLoaded', function() {
+            const formControls = document.querySelectorAll('input[type="text"], input[type="password"]');
+            formControls.forEach(function(control) {
+                if (!control.classList.contains('form-control')) {
+                    control.classList.add('form-control');
+                }
+                control.setAttribute('autocomplete', control.name === 'username' ? 'username' : 'current-password');
+            });
+
+            // Determine initial section: Django context > hash > query param > default to welcome
+            {% if show_section %}
+                // Django view explicitly set which section to show (e.g., after form validation error)
+                const initialSection = '{{ show_section }}';
+            {% else %}
+                const params = new URLSearchParams(window.location.search);
+                const hash = window.location.hash ? window.location.hash.replace('#','') : '';
+                const initialSection = (hash || params.get('section') || 'welcome');
+            {% endif %}
+            
+            showSection(initialSection);
+            history.replaceState(null, null, `#${initialSection}`);
+        });
+
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', function(event) {
+            // Navigate to the section indicated by the current hash, default to welcome
+            const currentHash = window.location.hash ? window.location.hash.replace('#','') : 'welcome';
+            showSection(currentHash);
+        });
+
+        // Update URL hash when section changes
+        const originalShowSection = showSection;
+        showSection = function(sectionId, navElement) {
+            originalShowSection(sectionId, navElement);
+            history.pushState(null, null, `#${sectionId}`);
+        };
+    </script>
+</body>
+</html>

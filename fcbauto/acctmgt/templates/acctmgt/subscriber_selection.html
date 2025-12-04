@@ -1,0 +1,568 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Subscriber Selection{% endblock %}
+
+{% block extra_css %}
+<style>
+  body {
+    /* Use global gradient background from base.html */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+  }
+
+  .login-container {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 15px;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+    padding: 2.5rem;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .login-header {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+
+  .login-icon {
+    width: 80px;
+    height: 80px;
+    background: linear-gradient(to bottom, #4ecedf, #f5f5f5);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.5rem;
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+  }
+
+  .login-icon i {
+    font-size: 2rem;
+    color: white;
+  }
+
+  .login-title {
+    color: #333;
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  .text-muted {
+    color: #6c757d;
+    font-size: 1rem;
+  }
+
+  .form-group {
+    margin-bottom: 1.5rem;
+  }
+
+  .form-label {
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 0.5rem;
+    display: block;
+  }
+
+  .form-control {
+    width: 100%;
+    padding: 0.875rem 1rem;
+    border: 2px solid #e1e5e9;
+    border-radius: 8px;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    background-color: #fff;
+  }
+
+  .form-control:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  }
+
+  .btn-primary {
+     background: linear-gradient(to bottom, #3cdef3, #64c4eb);
+    border: none;
+    padding: 0.875rem 2rem;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: white;
+    width: 100%;
+    transition: all 0.3s ease;
+    cursor: pointer;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+  }
+
+  .login-links {
+    text-align: center;
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e1e5e9;
+  }
+
+  .login-links a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 500;
+    margin: 0 1rem;
+    transition: color 0.3s ease;
+  }
+
+  .login-links a:hover {
+    color: #764ba2;
+    text-decoration: underline;
+  }
+
+  .alert {
+    border-radius: 6px;
+    margin-bottom: 1.5rem;
+  }
+
+  .subscriber-info {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    border-left: 4px solid #79f0f8;
+  }
+
+  .subscriber-info h6 {
+    color: #333;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
+
+  .subscriber-info p {
+    color: #6c757d;
+    margin: 0;
+    font-size: 0.9rem;
+  }
+
+  /* Searchable Dropdown Styles */
+  .searchable-dropdown {
+    position: relative;
+    width: 100%;
+  }
+
+  .dropdown-input-container {
+    position: relative;
+    width: 100%;
+  }
+
+  .dropdown-search {
+    width: 100%;
+    padding: 0.875rem 3rem 0.875rem 1rem;
+    border: 2px solid #e1e5e9;
+    border-radius: 8px;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    background-color: #fff;
+    cursor: pointer;
+  }
+
+  .dropdown-search:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    cursor: text;
+  }
+
+  .dropdown-arrow {
+    position: absolute;
+    right: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #6c757d;
+    pointer-events: none;
+    transition: transform 0.3s ease;
+  }
+
+  .dropdown-arrow.rotated {
+    transform: translateY(-50%) rotate(180deg);
+  }
+
+  .dropdown-options {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 2px solid #e1e5e9;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 1000;
+    display: none;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+
+  .dropdown-options.show {
+    display: block;
+  }
+
+  .dropdown-option {
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    border-bottom: 1px solid #f1f3f4;
+  }
+
+  .dropdown-option:last-child {
+    border-bottom: none;
+  }
+
+  .dropdown-option:hover {
+    background-color: #f8f9fa;
+  }
+
+  .dropdown-option.selected {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+  }
+
+  .dropdown-option.highlighted {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+    border-left: 3px solid #667eea;
+  }
+
+  .dropdown-option.hidden {
+    display: none;
+  }
+
+  /* Custom scrollbar for dropdown */
+  .dropdown-options::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .dropdown-options::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+  }
+
+  .dropdown-options::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+  }
+
+  .dropdown-options::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+  }
+
+  /* Search highlight */
+  .search-highlight {
+    background-color: #fff3cd;
+    font-weight: bold;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
+    <div class="col-12 col-md-8 col-lg-6 col-xl-5">
+      <div class="login-container">
+        <div class="login-header">
+          <div class="login-icon">
+            <i class="fas fa-building"></i>
+          </div>
+          <h1 class="login-title">Subscriber Selection</h1>
+          <p class="text-muted">Select your subscriber and enter validation token</p>
+        </div>
+
+        <div class="subscriber-info">
+          <h6><i class="fas fa-user"></i> Welcome, {{ user.username }}!</h6>
+          <p>Please select your subscriber and enter the validation token to access the data cleaning application.</p>
+        </div>
+
+
+
+        <form method="post">
+          {% csrf_token %}
+          
+          <div class="form-group">
+            <label for="{{ form.subscriber_name.id_for_label }}" class="form-label">
+              <i class="fas fa-building"></i> {{ form.subscriber_name.label }}
+            </label>
+            
+            <!-- Custom Searchable Dropdown -->
+            <div class="searchable-dropdown">
+              <div class="dropdown-input-container">
+                <input type="text" 
+                       class="form-control dropdown-search" 
+                       id="subscriber-search" 
+                       placeholder="Type to search subscribers..." 
+                       autocomplete="off">
+                <i class="fas fa-chevron-down dropdown-arrow"></i>
+              </div>
+              
+              <div class="dropdown-options" id="dropdown-options">
+                <div class="dropdown-option" data-value="">Select a subscriber...</div>
+                {% for choice in form.subscriber_name.field.choices %}
+                  {% if choice.0 %}
+                    <div class="dropdown-option" data-value="{{ choice.0 }}">{{ choice.1 }}</div>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </div>
+            
+            <!-- Hidden original select field -->
+            <select name="subscriber_name" id="{{ form.subscriber_name.id_for_label }}" style="display: none;" required>
+              {% for choice in form.subscriber_name.field.choices %}
+                <option value="{{ choice.0 }}">{{ choice.1 }}</option>
+              {% endfor %}
+            </select>
+            
+            {% if form.subscriber_name.errors %}
+              <div class="text-danger mt-1">
+                {% for error in form.subscriber_name.errors %}
+                  <small>{{ error }}</small>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="form-group">
+            <label for="{{ form.subscriber_token.id_for_label }}" class="form-label">
+              <i class="fas fa-key"></i> {{ form.subscriber_token.label }}
+            </label>
+            {{ form.subscriber_token }}
+            {% if form.subscriber_token.errors %}
+              <div class="text-danger mt-1">
+                {% for error in form.subscriber_token.errors %}
+                  <small>{{ error }}</small>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger">
+              {% for error in form.non_field_errors %}
+                {{ error }}
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          <button type="submit" class="btn btn-primary">
+            <i class="fas fa-check"></i> Validate & Continue
+          </button>
+        </form>
+
+        <div class="login-links">
+          <form method="post" action="{% url 'acctmgt:logout' %}" style="display: inline;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-link p-0" style="color: #6c757d; text-decoration: none; border: none; background: none; font-size: 0.95rem;">
+              <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('subscriber-search');
+    const dropdownOptions = document.getElementById('dropdown-options');
+    const dropdownArrow = document.querySelector('.dropdown-arrow');
+    const hiddenSelect = document.getElementById('{{ form.subscriber_name.id_for_label }}');
+    const options = dropdownOptions.querySelectorAll('.dropdown-option');
+    
+    let selectedIndex = -1;
+    let isOpen = false;
+    
+    // Initialize with first option if available
+    if (options.length > 0) {
+        searchInput.placeholder = options[0].textContent;
+    }
+    
+    // Toggle dropdown on input click
+    searchInput.addEventListener('click', function() {
+        toggleDropdown();
+    });
+    
+    // Search functionality
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase();
+        let visibleCount = 0;
+        
+        options.forEach(function(option, index) {
+            const text = option.textContent.toLowerCase();
+            const isMatch = text.includes(searchTerm) || searchTerm === '';
+            
+            if (isMatch) {
+                option.classList.remove('hidden');
+                // Highlight matching text
+                if (searchTerm && searchTerm !== '') {
+                    const regex = new RegExp(`(${searchTerm})`, 'gi');
+                    option.innerHTML = option.textContent.replace(regex, '<span class="search-highlight">$1</span>');
+                } else {
+                    option.innerHTML = option.textContent;
+                }
+                visibleCount++;
+            } else {
+                option.classList.add('hidden');
+            }
+        });
+        
+        // Show dropdown if there are visible options and input is focused
+        if (visibleCount > 0 && document.activeElement === searchInput) {
+            showDropdown();
+        } else if (visibleCount === 0) {
+            hideDropdown();
+        }
+        
+        selectedIndex = -1;
+        clearHighlight();
+    });
+    
+    // Keyboard navigation
+    searchInput.addEventListener('keydown', function(e) {
+        const visibleOptions = Array.from(options).filter(opt => !opt.classList.contains('hidden'));
+        
+        switch(e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                if (!isOpen) {
+                    showDropdown();
+                } else {
+                    selectedIndex = Math.min(selectedIndex + 1, visibleOptions.length - 1);
+                    highlightOption(visibleOptions);
+                }
+                break;
+                
+            case 'ArrowUp':
+                e.preventDefault();
+                selectedIndex = Math.max(selectedIndex - 1, 0);
+                highlightOption(visibleOptions);
+                break;
+                
+            case 'Enter':
+                e.preventDefault();
+                if (isOpen && selectedIndex >= 0 && visibleOptions[selectedIndex]) {
+                    selectOption(visibleOptions[selectedIndex]);
+                }
+                break;
+                
+            case 'Escape':
+                hideDropdown();
+                searchInput.blur();
+                break;
+        }
+    });
+    
+    // Option click handlers
+    options.forEach(function(option) {
+        option.addEventListener('click', function() {
+            selectOption(this);
+        });
+        
+        option.addEventListener('mouseenter', function() {
+            clearHighlight();
+            this.classList.add('highlighted');
+            selectedIndex = Array.from(options).filter(opt => !opt.classList.contains('hidden')).indexOf(this);
+        });
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.searchable-dropdown')) {
+            hideDropdown();
+        }
+    });
+    
+    // Functions
+    function toggleDropdown() {
+        if (isOpen) {
+            hideDropdown();
+        } else {
+            showDropdown();
+        }
+    }
+    
+    function showDropdown() {
+        dropdownOptions.classList.add('show');
+        dropdownArrow.classList.add('rotated');
+        isOpen = true;
+    }
+    
+    function hideDropdown() {
+        dropdownOptions.classList.remove('show');
+        dropdownArrow.classList.remove('rotated');
+        isOpen = false;
+        selectedIndex = -1;
+        clearHighlight();
+    }
+    
+    function selectOption(option) {
+        const value = option.getAttribute('data-value');
+        const text = option.textContent;
+        
+        // Update search input
+        searchInput.value = text;
+        
+        // Update hidden select
+        hiddenSelect.value = value;
+        
+        // Update visual selection
+        options.forEach(opt => opt.classList.remove('selected'));
+        option.classList.add('selected');
+        
+        // Hide dropdown
+        hideDropdown();
+        
+        // Clear search highlights
+        options.forEach(function(opt) {
+            opt.innerHTML = opt.textContent;
+        });
+    }
+    
+    function highlightOption(visibleOptions) {
+        clearHighlight();
+        if (selectedIndex >= 0 && selectedIndex < visibleOptions.length) {
+            visibleOptions[selectedIndex].classList.add('highlighted');
+            
+            // Scroll into view if needed
+            const optionElement = visibleOptions[selectedIndex];
+            const container = dropdownOptions;
+            const optionTop = optionElement.offsetTop;
+            const optionBottom = optionTop + optionElement.offsetHeight;
+            const containerTop = container.scrollTop;
+            const containerBottom = containerTop + container.offsetHeight;
+            
+            if (optionTop < containerTop) {
+                container.scrollTop = optionTop;
+            } else if (optionBottom > containerBottom) {
+                container.scrollTop = optionBottom - container.offsetHeight;
+            }
+        }
+    }
+    
+    function clearHighlight() {
+        options.forEach(function(option) {
+            option.classList.remove('highlighted');
+        });
+    }
+    
+    // Initialize with current form value if any
+    const currentValue = hiddenSelect.value;
+    if (currentValue) {
+        const selectedOption = Array.from(options).find(opt => opt.getAttribute('data-value') === currentValue);
+        if (selectedOption) {
+            selectOption(selectedOption);
+        }
+    }
+});
+</script>
+
+{% endblock %}

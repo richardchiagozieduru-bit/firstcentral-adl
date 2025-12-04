@@ -1,0 +1,104 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls static %}
+
+
+
+{% block extrahead %}
+    {{ block.super }}
+    <style>
+        .bulk-generate-info {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .bulk-generate-info h3 {
+            margin: 0 0 10px 0;
+            color: #0066cc;
+        }
+        
+        .bulk-generate-info p {
+            margin: 5px 0;
+            color: #333;
+        }
+        
+        .bulk-actions {
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .bulk-actions h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .action-buttons .button {
+            padding: 8px 16px;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        
+        .bulk-generate-btn {
+            background: #28a745;
+            color: white;
+            border: 1px solid #1e7e34;
+        }
+        
+        .bulk-generate-btn:hover {
+            background: #218838;
+            color: white;
+        }
+        
+        .add-token-btn {
+            background: #007cba;
+            color: white;
+            border: 1px solid #005a87;
+        }
+        
+        .add-token-btn:hover {
+            background: #005a87;
+            color: white;
+        }
+    </style>
+{% endblock %}
+
+{% block content_title %}
+    {{ block.super }}
+    
+    <div class="bulk-generate-info">
+        <h3>{% trans 'Token Management' %}</h3>
+        <p>{% trans 'Use the bulk generation feature to create multiple tokens at once for selected subscribers.' %}</p>
+        <p>{% trans 'You can also use the action dropdown below to activate/deactivate multiple tokens.' %}</p>
+        
+        <div class="action-buttons">
+            <a href="{% url 'admin:auto_subscribertoken_add' %}" class="button add-token-btn">
+                <strong>{% trans 'Add Subscriber Token' %}</strong>
+            </a>
+            <a href="{% url 'admin:auto_subscribertoken_bulk_generate' %}" class="button bulk-generate-btn">
+                <strong>{% trans 'Bulk Generate Tokens' %}</strong>
+            </a>
+        </div>
+    </div>
+{% endblock %}
+
+{% block result_list %}
+    {% if cl.result_count %}
+        <div class="bulk-actions">
+            <h4>{% trans 'Quick Actions' %}</h4>
+            <p>{% trans 'Select tokens below and use the "Action" dropdown to perform bulk operations like activate/deactivate.' %}</p>
+        </div>
+    {% endif %}
+    {{ block.super }}
+{% endblock %}

@@ -1,0 +1,431 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:auto_subscribertoken_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+{% comment %} &rsaquo; {{ title }} {% endcomment %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="module aligned">
+        {% comment %} <h1>{{ title }}</h1> {% endcomment %}
+        
+        <div class="help">
+            <p>Use this form to generate multiple tokens for selected subscribers. This is useful for creating tokens in bulk for distribution or testing purposes.</p>
+        </div>
+        
+        <form method="post" novalidate>
+            {% csrf_token %}
+            
+            <fieldset class="module aligned">
+                <h2>Token Generation Settings</h2>
+                
+                <div class="form-row">
+                    <div>
+                        <label for="{{ form.tokens_per_subscriber.id_for_label }}">{{ form.tokens_per_subscriber.label }}:</label>
+                        {{ form.tokens_per_subscriber }}
+                        {% if form.tokens_per_subscriber.help_text %}
+                            <p class="help">{{ form.tokens_per_subscriber.help_text }}</p>
+                        {% endif %}
+                        {% if form.tokens_per_subscriber.errors %}
+                            <ul class="errorlist">
+                                {% for error in form.tokens_per_subscriber.errors %}
+                                    <li>{{ error }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div>
+                        <label for="{{ form.expiry_days.id_for_label }}">{{ form.expiry_days.label }}:</label>
+                        {{ form.expiry_days }}
+                        {% if form.expiry_days.help_text %}
+                            <p class="help">{{ form.expiry_days.help_text }}</p>
+                        {% endif %}
+                        {% if form.expiry_days.errors %}
+                            <ul class="errorlist">
+                                {% for error in form.expiry_days.errors %}
+                                    <li>{{ error }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div>
+                        <label for="{{ form.is_active.id_for_label }}">{{ form.is_active.label }}:</label>
+                        {{ form.is_active }}
+                        {% if form.is_active.help_text %}
+                            <p class="help">{{ form.is_active.help_text }}</p>
+                        {% endif %}
+                        {% if form.is_active.errors %}
+                            <ul class="errorlist">
+                                {% for error in form.is_active.errors %}
+                                    <li>{{ error }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% endif %}
+                    </div>
+                </div>
+            </fieldset>
+            
+            <fieldset class="module aligned">
+                <h2>Select Subscribers</h2>
+                
+                <div class="form-row">
+                    <div>
+                        <label for="{{ form.subscribers.id_for_label }}">{{ form.subscribers.label }}:</label>
+                        <div class="subscriber-select-container">
+                            <div class="search-container">
+                                <input type="text" id="subscriber-search" placeholder="Search subscribers..." class="search-input">
+                                <div class="search-icon">🔍</div>
+                            </div>
+                            <div class="selected-count">0 subscribers selected</div>
+                            <div class="action-buttons">
+                                <button type="button" id="select-all-btn" class="action-btn">Select All</button>
+                                <button type="button" id="select-none-btn" class="action-btn">Clear All</button>
+                                <button type="button" id="toggle-dropdown" class="dropdown-toggle">▼ Show Options</button>
+                            </div>
+                            <div class="dropdown-container" id="dropdown-container">
+                                <div class="checkbox-select-multiple">
+                                    {{ form.subscribers }}
+                                </div>
+                            </div>
+                        </div>
+                        {% if form.subscribers.help_text %}
+                            <p class="help">{{ form.subscribers.help_text }}</p>
+                        {% endif %}
+                        {% if form.subscribers.errors %}
+                            <ul class="errorlist">
+                                {% for error in form.subscribers.errors %}
+                                    <li>{{ error }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="help">
+                        <p><strong>Note:</strong> Use the search bar to quickly find subscribers. You can select multiple subscribers and tokens will be generated for each selected subscriber according to the settings above.</p>
+                    </div>
+                </div>
+            </fieldset>
+            
+            <div class="submit-row">
+                <input type="submit" value="Generate Tokens" class="default" name="_save">
+                <a href="{% url 'admin:auto_subscribertoken_changelist' %}" class="button cancel-link">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Enhanced subscriber selection with search and dropdown functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('subscriber-search');
+    const dropdownContainer = document.getElementById('dropdown-container');
+    const toggleBtn = document.getElementById('toggle-dropdown');
+    const selectAllBtn = document.getElementById('select-all-btn');
+    const selectNoneBtn = document.getElementById('select-none-btn');
+    const selectedCount = document.querySelector('.selected-count');
+    const checkboxContainer = document.querySelector('.checkbox-select-multiple');
+    
+    if (!checkboxContainer) return;
+    
+    const checkboxes = checkboxContainer.querySelectorAll('input[type="checkbox"]');
+    const labels = checkboxContainer.querySelectorAll('label');
+    
+    // Initialize dropdown as hidden
+    dropdownContainer.style.display = 'none';
+    
+    // Update selected count
+    function updateSelectedCount() {
+        const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+        selectedCount.textContent = `${checkedCount} subscriber${checkedCount !== 1 ? 's' : ''} selected`;
+        
+        // Update toggle button text
+        if (checkedCount > 0) {
+            selectedCount.style.fontWeight = 'bold';
+            selectedCount.style.color = '#28a745';
+        } else {
+            selectedCount.style.fontWeight = 'normal';
+            selectedCount.style.color = '#666';
+        }
+    }
+    
+    // Toggle dropdown visibility
+    toggleBtn.addEventListener('click', function() {
+        const isVisible = dropdownContainer.style.display !== 'none';
+        dropdownContainer.style.display = isVisible ? 'none' : 'block';
+        toggleBtn.textContent = isVisible ? '▼ Show Options' : '▲ Hide Options';
+        toggleBtn.classList.toggle('active', !isVisible);
+    });
+    
+    // Search functionality
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase();
+        
+        labels.forEach(label => {
+            const text = label.textContent.toLowerCase();
+            const parentDiv = label.parentElement;
+            
+            if (text.includes(searchTerm)) {
+                parentDiv.style.display = 'block';
+            } else {
+                parentDiv.style.display = 'none';
+            }
+        });
+        
+        // Show dropdown when searching
+        if (searchTerm && dropdownContainer.style.display === 'none') {
+            dropdownContainer.style.display = 'block';
+            toggleBtn.textContent = '▲ Hide Options';
+            toggleBtn.classList.add('active');
+        }
+    });
+    
+    // Select all functionality
+    selectAllBtn.addEventListener('click', function() {
+        const visibleCheckboxes = Array.from(checkboxes).filter(cb => 
+            cb.parentElement.parentElement.style.display !== 'none'
+        );
+        visibleCheckboxes.forEach(cb => cb.checked = true);
+        updateSelectedCount();
+    });
+    
+    // Select none functionality
+    selectNoneBtn.addEventListener('click', function() {
+        checkboxes.forEach(cb => cb.checked = false);
+        updateSelectedCount();
+    });
+    
+    // Update count when checkboxes change
+    checkboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', updateSelectedCount);
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(event) {
+        const container = document.querySelector('.subscriber-select-container');
+        if (!container.contains(event.target)) {
+            dropdownContainer.style.display = 'none';
+            toggleBtn.textContent = '▼ Show Options';
+            toggleBtn.classList.remove('active');
+        }
+    });
+    
+    // Initial count update
+    updateSelectedCount();
+});
+</script>
+
+<style>
+/* Subscriber Selection Container */
+.subscriber-select-container {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fff;
+    padding: 0;
+    margin-bottom: 10px;
+}
+
+/* Search Container */
+.search-container {
+    position: relative;
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    background: #f8f9fa;
+}
+
+.search-input {
+    width: 100%;
+    padding: 8px 35px 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.search-input:focus {
+    border-color: #007cba;
+    box-shadow: 0 0 0 2px rgba(0, 124, 186, 0.1);
+}
+
+.search-icon {
+    position: absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #666;
+    pointer-events: none;
+}
+
+/* Selected Count */
+.selected-count {
+    padding: 8px 12px;
+    background: #f1f3f4;
+    border-bottom: 1px solid #eee;
+    font-size: 13px;
+    color: #666;
+    font-weight: normal;
+}
+
+/* Action Buttons */
+.action-buttons {
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.action-btn {
+    padding: 6px 12px;
+    border: 1px solid #ddd;
+    background: #fff;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.action-btn:hover {
+    background: #e9ecef;
+    border-color: #adb5bd;
+}
+
+.dropdown-toggle {
+    padding: 6px 12px;
+    border: 1px solid #007cba;
+    background: #007cba;
+    color: white;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: auto;
+}
+
+.dropdown-toggle:hover {
+    background: #005a87;
+}
+
+.dropdown-toggle.active {
+    background: #28a745;
+    border-color: #28a745;
+}
+
+/* Dropdown Container */
+.dropdown-container {
+    max-height: 300px;
+    overflow-y: auto;
+    border-top: 1px solid #eee;
+}
+
+.checkbox-select-multiple {
+    padding: 0;
+    background: #fff;
+    border: none;
+}
+
+.checkbox-select-multiple > div {
+    border-bottom: 1px solid #f1f3f4;
+    transition: background-color 0.2s;
+}
+
+.checkbox-select-multiple > div:hover {
+    background-color: #f8f9fa;
+}
+
+.checkbox-select-multiple > div:last-child {
+    border-bottom: none;
+}
+
+.checkbox-select-multiple label {
+    display: block;
+    padding: 10px 12px;
+    margin: 0;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1.4;
+    transition: all 0.2s;
+}
+
+.checkbox-select-multiple input[type="checkbox"] {
+    margin-right: 8px;
+    transform: scale(1.1);
+}
+
+.checkbox-select-multiple input[type="checkbox"]:checked + label,
+.checkbox-select-multiple label:has(input[type="checkbox"]:checked) {
+    background-color: #e7f3ff;
+    font-weight: 500;
+}
+
+/* Scrollbar Styling */
+.dropdown-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.dropdown-container::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+.dropdown-container::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+.dropdown-container::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* General Styles */
+.help {
+    color: #666;
+    font-size: 11px;
+    margin-top: 5px;
+}
+
+.submit-row {
+    padding: 12px 14px;
+    margin: 0 0 20px;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    text-align: right;
+}
+
+.cancel-link {
+    margin-left: 10px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .action-buttons {
+        flex-direction: column;
+    }
+    
+    .dropdown-toggle {
+        margin-left: 0;
+        margin-top: 8px;
+    }
+    
+    .search-input {
+        font-size: 16px; /* Prevent zoom on iOS */
+    }
+}
+</style>
+{% endblock %}

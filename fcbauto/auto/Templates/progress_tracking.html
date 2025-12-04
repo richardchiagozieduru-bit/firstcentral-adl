@@ -1,0 +1,938 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Processing - {{ upload_session.filename }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">File Processing Status</h4>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <strong>File:</strong> {{ upload_session.original_filename }}
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <strong>Subscriber:</strong> {{ subscriber_name|default:"N/A" }}
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <strong>Started:</strong> {{ upload_session.uploaded_at|date:"M d, Y H:i" }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Processing Timeline -->
+                    <div class="mb-4">
+                        <h5 class="mb-3">Processing Timeline</h5>
+                        <div class="processing-timeline">
+                            <div class="timeline-step" id="step-upload-validation">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-upload"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>File Upload & Validation</h6>
+                                    <p class="text-muted mb-0">Analyzing file structure and archiving original</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-data-mapping">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-map"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Data Mapping & Preparation</h6>
+                                    <p class="text-muted mb-0">Fuzzy column matching and data standardization</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-data-cleaning">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-broom"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Data Cleaning & Transformation</h6>
+                                    <p class="text-muted mb-0">Name processing, date normalization, ID validation</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-credit-matching">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-link"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Credit Matching & Classification</h6>
+                                    <p class="text-muted mb-0">Matching credits to borrowers and business logic splitting</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-awaiting-verification">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-user-check"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Human Verification</h6>
+                                    <p class="text-muted mb-0">Manual review of commercial/consumer split decisions</p>
+                                    <div id="verification-info" class="mt-2" style="display:none;">
+                                        <small class="text-info">
+                                            • <span id="commercial-count">0</span> potential commercial entities in consumer records<br>
+                                            • <span id="consumer-count">0</span> potential consumer entities in commercial records
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-post-verification">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-cogs"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Finalization After Verification</h6>
+                                    <p class="text-muted mb-0">Applying verification decisions and re-matching credits</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-output-generation">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-file-export"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Output Generation</h6>
+                                    <p class="text-muted mb-0">Generating Excel and fixed-width text files</p>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline-step" id="step-completed">
+                                <div class="timeline-icon">
+                                    <i class="fas fa-check-circle"></i>
+                                </div>
+                                <div class="timeline-content">
+                                    <h6>Processing Complete</h6>
+                                    <p class="text-muted mb-0">Files saved and ready for review</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {% if upload_session.status == 'failed' and 'Validation Failed' in upload_session.error_message %}
+                    <!-- Current Status Hidden for Validation Errors -->
+                    {% else %}
+                    <div id="status-section" class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong>Current Status:</strong>
+                            <span id="status-badge" class="badge fs-6 bg-secondary">
+                                {{ upload_session.get_status_display }}
+                            </span>
+                        </div>
+                        
+                        <div class="progress mb-3" style="height: 8px;">
+                            <div id="progress-bar" class="progress-bar progress-bar-striped" role="progressbar" 
+                                 data-progress="{{ upload_session.progress_percentage }}"
+                                 aria-valuenow="{{ upload_session.progress_percentage }}" 
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <small class="text-muted" id="current-message">{{ upload_session.current_message|default:"Preparing..." }}</small>
+                            <small id="progress-text" class="text-muted">{{ upload_session.progress_percentage }}%</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Activity Log (Hidden for validation errors) -->
+                    {% if upload_session.status == 'failed' and 'Validation Failed' in upload_session.error_message %}
+                    <!-- Activity Log Hidden for Validation Errors -->
+                    {% else %}
+                    <div id="activity-log-section" class="mb-4">
+                        <h6 class="mb-3">Activity Log <small class="text-muted">• Live Updates</small></h6>
+                        <div id="activity-log" class="activity-log-container">
+                            {% if upload_session.activity_log %}
+                                {% for entry in upload_session.activity_log %}
+                                <div class="activity-log-entry">
+                                    <span class="log-time">[{{ entry.timestamp }}]</span>
+                                    <span class="log-message">{{ entry.message }}</span>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <div class="activity-log-entry text-muted">
+                                    <span class="log-message">No activity logged yet...</span>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <div id="error-section" class="alert alert-danger{% if not upload_session.error_message %} d-none{% endif %}">
+                        <strong>Error:</strong>
+                        <div id="error-message">{{ upload_session.error_message }}</div>
+                    </div>
+                    
+                    <div id="verification-section" class="{% if upload_session.status != 'awaiting_verification' %}d-none{% endif %}">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning bg-opacity-10">
+                                <h5 class="mb-0 text-warning">
+                                    <i class="fas fa-exclamation-triangle me-2"></i>
+                                    Human Verification Required
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="alert alert-info border-0 mb-3">
+                                    <div class="d-flex align-items-start">
+                                        <i class="fas fa-info-circle me-3 mt-1 text-info"></i>
+                                        <div>
+                                            <strong>Split Decision Review Needed:</strong> The system has identified potential misclassifications between consumer and commercial borrowers that require your review.
+                                            <ul class="mt-2 mb-0">
+                                                <li><strong id="verification-commercial-count">{{ upload_session.commercial_candidates_count }}</strong> potential commercial entities found in consumer records</li>
+                                                <li><strong id="verification-consumer-count">{{ upload_session.consumer_candidates_count }}</strong> potential consumer entities found in commercial records</li>
+                                            </ul>
+                                            <small class="text-muted">Your verification ensures data accuracy for credit bureau submission.</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="d-grid gap-2 d-md-flex justify-content-md-start">
+                                    <a href="{% url 'auto:verify_split_decision' %}?session_id={{ upload_session.id }}" 
+                                       class="btn btn-warning btn-lg" id="verification-btn">
+                                        <i class="fas fa-user-check me-2"></i> Start Verification Process
+                                    </a>
+                                    <button class="btn btn-outline-secondary" onclick="refreshStatus()">
+                                        <i class="fas fa-sync-alt me-2"></i> Refresh Status
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="completion-section" class="{% if upload_session.status != 'completed' %}d-none{% endif %}">
+                        <div class="alert alert-success text-center">
+                            <h3><i class="fas fa-check-circle me-2"></i>Processing Complete!</h3>
+                            
+                            <div class="mt-4">
+                                <a href="{% url 'auto:upload' %}?view=results" class="btn btn-primary btn-lg">
+                                    <i class="fas fa-eye me-2"></i> View Detailed Results
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4">
+                        <a href="{% url 'auto:upload' %}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Back to Upload
+                        </a>
+                        
+                        <button id="refresh-btn" class="btn btn-outline-primary ms-2" onclick="refreshStatus()">
+                            <i class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Validation Error Modal -->
+<div class="modal fade" id="validationErrorModal" tabindex="-1" aria-labelledby="validationErrorModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content border-danger">
+            <div class="modal-header bg-danger bg-opacity-10 border-danger">
+                <h5 class="modal-title text-danger" id="validationErrorModalLabel">
+                    <i class="fas fa-exclamation-triangle me-2"></i> Upload Validation Failed
+                </h5>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-danger border-0 mb-3">
+                    <strong>Required columns are empty in your file:</strong>
+                </div>
+                
+                <div id="modal-error-details" class="validation-error-details">
+                    <!-- Error details will be populated by JavaScript -->
+                </div>
+                
+                <div class="alert alert-info border-0 mt-3 mb-0">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>Next Steps:</strong> Please correct these issues in your Excel file and re-upload it.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-eye me-2"></i> View Details
+                </button>
+                <a href="{% url 'auto:upload' %}" class="btn btn-primary">
+                    <i class="fas fa-upload me-2"></i> Fix and Re-upload
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Validation Error Modal Styles */
+.validation-error-details {
+    background: #fff;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.error-sheet {
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.error-sheet:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.error-sheet-title {
+    font-weight: 600;
+    color: #212529;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+}
+
+.error-sheet-title i {
+    margin-right: 0.5rem;
+    color: #dc3545;
+}
+
+.error-list {
+    list-style: none;
+    padding-left: 2rem;
+    margin: 0;
+}
+
+.error-list li {
+    color: #6c757d;
+    margin-bottom: 0.25rem;
+    position: relative;
+}
+
+.error-list li::before {
+    content: '•';
+    color: #dc3545;
+    font-weight: bold;
+    position: absolute;
+    left: -1rem;
+}
+
+/* Modal enhancements */
+.modal-content.border-danger {
+    border-width: 2px;
+}
+
+.modal-header.bg-danger {
+    border-bottom: 2px solid #dc3545;
+}
+
+/* Processing Timeline Styles */
+.processing-timeline {
+    position: relative;
+    padding: 0;
+}
+
+.processing-timeline::before {
+    content: '';
+    position: absolute;
+    top: 30px;
+    left: 30px;
+    height: calc(100% - 60px);
+    width: 2px;
+    background: #e9ecef;
+    z-index: 1;
+}
+
+.timeline-step {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 2rem;
+    z-index: 2;
+}
+
+.timeline-step:last-child {
+    margin-bottom: 0;
+}
+
+.timeline-icon {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: #f8f9fa;
+    border: 3px solid #e9ecef;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 1rem;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 3;
+    transition: all 0.3s ease;
+}
+
+.timeline-icon i {
+    font-size: 1.2rem;
+    color: #6c757d;
+    transition: all 0.3s ease;
+}
+
+.timeline-content {
+    flex: 1;
+    padding-top: 0.5rem;
+}
+
+.timeline-content h6 {
+    margin-bottom: 0.5rem;
+    color: #495057;
+    font-weight: 600;
+}
+
+.timeline-content p {
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
+/* Active state */
+.timeline-step.active .timeline-icon {
+    background: #fff3cd;
+    border-color: #ffc107;
+    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.1);
+}
+
+.timeline-step.active .timeline-icon i {
+    color: #ffc107;
+}
+
+.timeline-step.active .timeline-content h6 {
+    color: #212529;
+    font-weight: 700;
+}
+
+/* Completed state */
+.timeline-step.completed .timeline-icon {
+    background: #d1edff;
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.1);
+}
+
+.timeline-step.completed .timeline-icon i {
+    color: #0d6efd;
+}
+
+.timeline-step.completed .timeline-content h6 {
+    color: #0d6efd;
+    font-weight: 600;
+}
+
+/* Final completed state (success) */
+.timeline-step.active.completed .timeline-icon {
+    background: #d1e7dd;
+    border-color: #198754;
+    box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.1);
+}
+
+.timeline-step.active.completed .timeline-icon i {
+    color: #198754;
+}
+
+.timeline-step.active.completed .timeline-content h6 {
+    color: #198754;
+}
+
+/* Activity Log Styles */
+.activity-log-container {
+    max-height: 300px;
+    overflow-y: auto;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+.activity-log-entry {
+    margin-bottom: 0.5rem;
+    line-height: 1.5;
+}
+
+.activity-log-entry:last-child {
+    margin-bottom: 0;
+}
+
+.log-time {
+    color: #6c757d;
+    margin-right: 0.5rem;
+}
+
+.log-message {
+    color: #212529;
+}
+
+/* Enhanced progress bar */
+.progress {
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    transition: width 0.6s ease;
+}
+
+/* Status badge enhancement */
+.badge.fs-6 {
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+}
+
+/* Verification section enhancements */
+#verification-section .card {
+    box-shadow: 0 0.125rem 0.25rem rgba(255, 193, 7, 0.075);
+}
+
+#verification-section .btn-warning {
+    box-shadow: 0 0.125rem 0.25rem rgba(255, 193, 7, 0.25);
+}
+
+#verification-section .btn-warning:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0.25rem 0.5rem rgba(255, 193, 7, 0.3);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .processing-timeline::before {
+        left: 20px;
+    }
+    
+    .timeline-icon {
+        width: 40px;
+        height: 40px;
+        margin-right: 0.75rem;
+    }
+    
+    .timeline-icon i {
+        font-size: 1rem;
+    }
+    
+    .timeline-content h6 {
+        font-size: 0.95rem;
+    }
+    
+    .timeline-content p {
+        font-size: 0.85rem;
+    }
+}
+</style>
+
+<script>
+let pollInterval;
+const csrfToken = '{{ csrf_token }}';
+const apiUrl = "{% url 'auto:progress_api' upload_session.id %}";
+const sessionId = {{ upload_session.id }};
+
+// Track verification completion for timeline updates
+let verificationCompleted = {% if upload_session.verification_completed_at %}true{% else %}false{% endif %};
+
+// Track if modal has been shown to avoid showing it multiple times
+let validationModalShown = false;
+
+function updateStatus(data) {
+    console.log('Received update:', data);
+    
+    const statusSection = document.getElementById('status-section');
+    const activityLogSection = document.getElementById('activity-log-section');
+    const isValidationFailure = data.status === 'failed' && data.error_message && data.error_message.includes('Validation Failed');
+
+    if (statusSection) {
+        statusSection.style.display = isValidationFailure ? 'none' : 'block';
+    }
+
+    if (activityLogSection) {
+        activityLogSection.style.display = isValidationFailure ? 'none' : 'block';
+    }
+
+    // Update status badge
+    const statusBadge = document.getElementById('status-badge');
+    if (statusBadge) {
+        statusBadge.textContent = getStatusDisplay(data.status);
+        statusBadge.className = 'badge fs-6 bg-' + getStatusClass(data.status);
+    }
+    
+    // Update progress bar
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    if (progressBar) {
+        progressBar.style.width = data.progress + '%';
+        progressBar.setAttribute('aria-valuenow', data.progress);
+    }
+    if (progressText) {
+        progressText.textContent = data.progress + '%';
+    }
+    
+    // Update current message
+    const currentMessage = document.getElementById('current-message');
+    if (currentMessage && data.current_message) {
+        currentMessage.textContent = data.current_message;
+    }
+    
+    // Update progress bar animation
+    if (progressBar) {
+        if (data.status === 'processing' || data.status === 'finalizing') {
+            progressBar.classList.add('progress-bar-animated');
+        } else {
+            progressBar.classList.remove('progress-bar-animated');
+        }
+    }
+    
+    // Track verification completion
+    if (data.status === 'awaiting_verification') {
+        verificationCompleted = false;
+    } else if (data.status === 'finalizing' || data.status === 'completed') {
+        verificationCompleted = true;
+    }
+    
+    // Update timeline
+    updateTimeline(data.processing_stage || data.status);
+    
+    // Update activity log
+    if (data.activity_log && data.activity_log.length > 0) {
+        updateActivityLog(data.activity_log);
+    }
+    
+    // Handle error messages and check for validation failure
+    const errorSection = document.getElementById('error-section');
+    const errorMessage = document.getElementById('error-message');
+    if (data.error_message) {
+        errorMessage.textContent = data.error_message;
+        errorSection.classList.remove('d-none');
+        
+        // Check for validation failure and show modal (only once)
+        if (!validationModalShown && isValidationFailure) {
+            console.log('[Validation Modal] Validation failure detected during polling');
+            validationModalShown = true;
+            parseAndShowValidationModal(data.error_message);
+        }
+    } else {
+        errorSection.classList.add('d-none');
+    }
+    
+    // Handle verification section
+    const verificationSection = document.getElementById('verification-section');
+    if (data.status === 'awaiting_verification') {
+        verificationSection.classList.remove('d-none');
+        
+        // Update verification counts
+        if (data.commercial_candidates_count !== undefined) {
+            document.getElementById('verification-commercial-count').textContent = data.commercial_candidates_count;
+            document.getElementById('commercial-count').textContent = data.commercial_candidates_count;
+        }
+        if (data.consumer_candidates_count !== undefined) {
+            document.getElementById('verification-consumer-count').textContent = data.consumer_candidates_count;
+            document.getElementById('consumer-count').textContent = data.consumer_candidates_count;
+        }
+        
+        // Show verification info in timeline
+        document.getElementById('verification-info').style.display = 'block';
+    } else {
+        verificationSection.classList.add('d-none');
+    }
+    
+    // Handle completion section
+    const completionSection = document.getElementById('completion-section');
+    if (data.status === 'completed') {
+        completionSection.classList.remove('d-none');
+        stopPolling();
+    } else {
+        completionSection.classList.add('d-none');
+    }
+    
+    // Stop polling if task is completed or failed
+    if (data.status === 'completed' || data.status === 'failed') {
+        stopPolling();
+    }
+}
+
+function updateTimeline(stage) {
+    const stageMapping = {
+        'pending': 'upload-validation',
+        'upload_validation': 'upload-validation',
+        'data_mapping': 'data-mapping',
+        'data_cleaning': 'data-cleaning',
+        'credit_matching': 'credit-matching',
+        'awaiting_verification': 'awaiting-verification',
+        'post_verification': 'post-verification',
+        'output_generation': 'output-generation',
+        'completed': 'completed',
+        'processing': verificationCompleted ? 'post-verification' : 'data-mapping',
+        'finalizing': 'post-verification'
+    };
+    
+    const currentStage = stageMapping[stage] || 'upload-validation';
+    const stages = [
+        'upload-validation', 'data-mapping', 'data-cleaning', 'credit-matching',
+        'awaiting-verification', 'post-verification', 'output-generation', 'completed'
+    ];
+    
+    const currentIndex = stages.indexOf(currentStage);
+    
+    stages.forEach((stageName, index) => {
+        const stepElement = document.getElementById(`step-${stageName}`);
+        if (stepElement) {
+            stepElement.classList.remove('active', 'completed');
+            
+            if (index < currentIndex) {
+                stepElement.classList.add('completed');
+            } else if (index === currentIndex) {
+                stepElement.classList.add('active');
+                if (stage === 'completed') {
+                    stepElement.classList.add('completed');
+                }
+            }
+        }
+    });
+}
+
+function updateActivityLog(logEntries) {
+    const logContainer = document.getElementById('activity-log');
+    logContainer.innerHTML = '';
+    
+    logEntries.forEach(entry => {
+        const logEntry = document.createElement('div');
+        logEntry.className = 'activity-log-entry';
+        logEntry.innerHTML = `<span class="log-time">[${entry.timestamp}]</span><span class="log-message">${entry.message}</span>`;
+        logContainer.appendChild(logEntry);
+    });
+    
+    // Auto-scroll to bottom
+    logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+function getStatusDisplay(status) {
+    const statusMap = {
+        'pending': 'Pending',
+        'uploading': 'Uploading',
+        'processing': 'Processing',
+        'awaiting_verification': 'Awaiting Verification',
+        'finalizing': 'Finalizing',
+        'completed': 'Completed',
+        'failed': 'Failed'
+    };
+    return statusMap[status] || status;
+}
+
+function getStatusClass(status) {
+    const classMap = {
+        'pending': 'secondary',
+        'uploading': 'info',
+        'processing': 'warning',
+        'awaiting_verification': 'info',
+        'finalizing': 'primary',
+        'completed': 'success',
+        'failed': 'danger'
+    };
+    return classMap[status] || 'secondary';
+}
+
+function refreshStatus() {
+    console.log('[Progress Tracking] Fetching status from:', apiUrl);
+    fetch(apiUrl, {
+        method: 'GET',
+        headers: {
+            'X-CSRFToken': csrfToken,
+            'Content-Type': 'application/json',
+        },
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('[Progress Tracking] Received data:', data);
+        if (data.error) {
+            console.error('Error fetching status:', data.error);
+        } else {
+            updateStatus(data);
+        }
+    })
+    .catch(error => {
+        console.error('[Progress Tracking] Error:', error);
+        const errorSection = document.getElementById('error-section');
+        const errorMessage = document.getElementById('error-message');
+        errorMessage.textContent = 'Failed to refresh status. Please try again.';
+        errorSection.classList.remove('d-none');
+    });
+}
+
+function startPolling() {
+    // Poll every 2 seconds for real-time updates
+    console.log('[Progress Tracking] Starting polling...');
+    pollInterval = setInterval(refreshStatus, 2000);
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+
+function checkValidationFailure() {
+    const currentStatus = '{{ upload_session.status }}';
+    const errorMessage = '{{ upload_session.error_message|escapejs }}';
+    
+    
+    const statusSection = document.getElementById('status-section');
+    const activityLogSection = document.getElementById('activity-log-section');
+    const isValidationFailure = currentStatus === 'failed' && errorMessage && errorMessage !== 'None' && errorMessage.includes('Validation Failed');
+
+    if (statusSection) {
+        statusSection.style.display = isValidationFailure ? 'none' : 'block';
+    }
+
+    if (activityLogSection) {
+        activityLogSection.style.display = isValidationFailure ? 'none' : 'block';
+    }
+
+    // Check if status is failed and error message contains validation failure
+    if (isValidationFailure) {
+        console.log('[Validation Modal] Detected validation failure, showing modal');
+        validationModalShown = true;
+        parseAndShowValidationModal(errorMessage);
+    } else {
+        console.log('[Validation Modal] No validation failure detected (will check during polling)');
+    }
+}
+
+function parseAndShowValidationModal(errorMessage) {
+    const modalElement = document.getElementById('validationErrorModal');
+    const errorDetailsContainer = document.getElementById('modal-error-details');
+    
+    if (!modalElement || !errorDetailsContainer) {
+        console.error('[Validation Modal] Modal elements not found');
+        return;
+    }
+    
+    // Parse the error message to extract sheet-specific errors
+    const lines = errorMessage.split('\\n');
+    let currentSheet = null;
+    let parsedErrors = {};
+    
+    lines.forEach(line => {
+        line = line.trim();
+        if (!line || line.includes('Validation Failed') || line.includes('Please correct')) {
+            return;
+        }
+        
+        // Check if this is a sheet name line (ends with colon)
+        if (line.endsWith(':')) {
+            currentSheet = line.slice(0, -1).trim();
+            parsedErrors[currentSheet] = [];
+        }
+        // Check if this is an error bullet point
+        else if (line.startsWith('•') || line.startsWith('-')) {
+            if (currentSheet) {
+                const errorText = line.replace(/^[•\\-]\\s*/, '').trim();
+                parsedErrors[currentSheet].push(errorText);
+            }
+        }
+    });
+    
+    // Build HTML for modal
+    let errorHtml = '';
+    const sheetIcons = {
+        'Individual': 'fa-user',
+        'Corporate': 'fa-building',
+        'Credit': 'fa-credit-card',
+        'Commercial': 'fa-briefcase',
+        'Consumer': 'fa-users',
+        'Principal': 'fa-user-tie'
+    };
+    
+    for (const [sheetName, errors] of Object.entries(parsedErrors)) {
+        if (errors.length > 0) {
+            // Determine icon based on sheet name
+            let icon = 'fa-file-alt';
+            for (const [key, iconClass] of Object.entries(sheetIcons)) {
+                if (sheetName.includes(key)) {
+                    icon = iconClass;
+                    break;
+                }
+            }
+            
+            errorHtml += `
+                <div class="error-sheet">
+                    <div class="error-sheet-title">
+                        <i class="fas ${icon}"></i>
+                        ${sheetName}
+                    </div>
+                    <ul class="error-list">
+                        ${errors.map(error => `<li>${error}</li>`).join('')}
+                    </ul>
+                </div>
+            `;
+        }
+    }
+    
+    if (errorHtml) {
+        errorDetailsContainer.innerHTML = errorHtml;
+    } else {
+        // Fallback: show the raw error message
+        errorDetailsContainer.innerHTML = `<div class="alert alert-danger mb-0">${errorMessage.replace(/\\n/g, '<br>')}</div>`;
+    }
+    
+    // Show the modal using Bootstrap 5 API
+    try {
+        const modal = new bootstrap.Modal(modalElement);
+        modal.show();
+        console.log('[Validation Modal] Modal displayed');
+    } catch (e) {
+        console.error('[Validation Modal] Error showing modal:', e);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const progressBar = document.getElementById('progress-bar');
+    if (progressBar) {
+        const initialProgress = progressBar.getAttribute('data-progress') || 0;
+        progressBar.style.width = initialProgress + '%';
+    }
+    
+    // Initialize timeline
+    const currentStatus = '{{ upload_session.status }}';
+    const currentStage = '{{ upload_session.processing_stage }}';
+    updateTimeline(currentStage || currentStatus);
+    
+    // Add animation to progress bar if processing or finalizing
+    if (progressBar && (currentStatus === 'processing' || currentStatus === 'finalizing')) {
+        progressBar.classList.add('progress-bar-animated');
+    }
+    
+    // Check for validation failure and show modal
+    checkValidationFailure();
+    
+    // Only start polling if task is not completed or failed
+    if (currentStatus !== 'completed' && currentStatus !== 'failed') {
+        startPolling();
+    }
+});
+
+// Stop polling when page is unloaded
+window.addEventListener('beforeunload', stopPolling);
+</script>
+{% endblock %}
