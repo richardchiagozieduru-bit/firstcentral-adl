@@ -3165,26 +3165,16 @@ def upload_file(request):
             subscriber_id = bound_subscriber.subscriber_id
             subscriber_name = bound_subscriber.subscriber_name
             
-            # Save original file for archival purposes before any processing
+            # Generate timestamp for this upload
             upload_timestamp = timezone.now()
-            original_save_success, original_file_path, original_error = save_original_file(
-                uploaded_file, 
-                subscriber_id, 
-                upload_timestamp
-            )
             
-            if not original_save_success:
-                messages.error(request, f'Failed to archive original file: {original_error}')
-                return redirect('auto:upload_file')
-            
-            # Reset file pointer for processing
-            uploaded_file.seek(0)
-            
+            # Save file to media folder (quick operation)
             fs = FileSystemStorage()
             filename = fs.save(uploaded_file.name, uploaded_file)
             file_path = os.path.join(settings.MEDIA_ROOT, filename)
             
-            # Create UploadSession to track this upload
+            # Create UploadSession IMMEDIATELY (before file archival)
+            # This allows instant redirect to tracking page
             upload_session = UploadSession.objects.create(
                 user=request.user,
                 subscriber_id=subscriber_id,
@@ -3192,10 +3182,13 @@ def upload_file(request):
                 original_filename=uploaded_file.name,
                 file_size=uploaded_file.size,
                 status='uploading',
-                original_file_path=original_file_path,  # Store the path to the original file
-                reporting_month=selected_month,  # Store user-selected month
-                reporting_year=selected_year     # Store user-selected year
+                original_file_path='',  # Will be set after archival
+                reporting_month=selected_month,
+                reporting_year=selected_year
             )
+            
+            # Reset file pointer for archival
+            uploaded_file.seek(0)
             
             # Show confirmation message with selected reporting period
             month_name = calendar.month_name[selected_month]

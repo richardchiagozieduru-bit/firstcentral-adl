@@ -511,6 +511,26 @@ def process_uploaded_file(upload_session_id, file_path, original_filename,
         # Get upload session
         upload_session = UploadSession.objects.get(id=upload_session_id)
         
+        # Archive original file early in async processing (non-blocking)
+        print(f"[ASYNC TASK] Archiving original file...")
+        from .file_archival_utils import save_original_file
+        try:
+            with open(file_path, 'rb') as f:
+                from django.core.files.base import File
+                original_save_success, original_file_path, original_error = save_original_file(
+                    File(f),
+                    subscriber_id,
+                    upload_session.uploaded_at
+                )
+                if original_save_success:
+                    upload_session.original_file_path = original_file_path
+                    upload_session.save(update_fields=['original_file_path'])
+                    print(f"[ASYNC TASK] Original file archived: {original_file_path}")
+                else:
+                    print(f"[ASYNC TASK] Warning: Could not archive original file: {original_error}")
+        except Exception as e:
+            print(f"[ASYNC TASK] Warning: File archival error: {e}")
+        
         # Update progress: Starting
         upload_session.update_progress('upload_validation', 5, 'File uploaded successfully, starting processing...')
         upload_session.mark_processing_started()
