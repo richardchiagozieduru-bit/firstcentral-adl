@@ -32,12 +32,12 @@ from django.db.models import Count, Avg
 from django.utils import timezone
 from .file_archival_utils import save_original_file, delete_original_file
 from datetime import timedelta
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+# from reportlab.lib.pagesizes import letter, A4
+# from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+# from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+# from reportlab.lib.units import inch
+# from reportlab.lib import colors
+# from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from django.http import HttpResponse
 from django.conf import settings
 from io import BytesIO
@@ -3623,7 +3623,7 @@ def upload_file(request):
             try:
                 from django_q.tasks import async_task
                 from .tasks import process_uploaded_file
-                
+                ra
                 task_id = async_task(
                     process_uploaded_file,
                     upload_session.id,
