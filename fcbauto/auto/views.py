@@ -1,6 +1,9 @@
 import os
+import logging
 import pandas as pd
 import re
+
+logger = logging.getLogger(__name__)
 import dateparser
 import numpy as np
 from datetime import datetime, timedelta
@@ -10,7 +13,7 @@ from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from .forms import ExcelUploadForm
-from .map import consu_mapping, comm_mapping, guar_mapping, credit_mapping, prin_mapping,Gender_dict,Country_dict,state_dict,Marital_dict,Borrower_dict,Employer_dict,Title_dict,Occu_dict,AccountStatus_dict,Loan_dict,Repayment_dict,Currency_dict,Classification_dict,Collateraltype_dict,Positioninbusiness_dict,ConsuToComm,CommToConsu, commercial_keywords,consumer_merged_mapping,commercial_merged_mapping,guarantor_columns_to_clear,principal_officer_columns_to_clear
+from .map import consu_mapping, comm_mapping, guar_mapping, credit_mapping, prin_mapping,Gender_dict,Country_dict,state_dict,Marital_dict,Borrower_dict,Employer_dict,Title_dict,Occu_dict,AccountStatus_dict,Loan_dict,Repayment_dict,Currency_dict,Classification_dict,Collateraltype_dict,Positioninbusiness_dict,ConsuToComm,CommToConsu, commercial_keywords,consumer_merged_mapping,commercial_merged_mapping,guarantor_columns_to_clear,principal_officer_columns_to_clear,sheet_name_mappings
 from .filename_utils import generate_filename, generate_fallback_filename, generate_filename_from_user
 from rapidfuzz import fuzz, process
 from typing import Union, Optional
@@ -21,6 +24,10 @@ from django.views.decorators.csrf import csrf_exempt
 import json
 from django.http import JsonResponse
 from .models import UploadSession
+from .exceptions import (
+    DataValidationError, FileProcessingError, MergeError,
+    OutputGenerationError, VerificationError
+)
 from django.db.models import Count, Avg
 from django.utils import timezone
 from .file_archival_utils import save_original_file, delete_original_file
@@ -35,6 +42,14 @@ from django.http import HttpResponse
 from django.conf import settings
 from io import BytesIO
 import os
+
+# Rate limiting for upload protection
+try:
+    from django_ratelimit.decorators import ratelimit
+    RATELIMIT_AVAILABLE = True
+except ImportError:
+    RATELIMIT_AVAILABLE = False
+    logger.warning("[SECURITY] django-ratelimit not installed. Rate limiting disabled.")
 
 
 
@@ -170,8 +185,8 @@ def ensure_all_sheets_exist(xds):
     missing_sheets = []
     existing_sheets = []
     
-    print("\n=== SHEET PROCESSING REPORT ===")
-    print("Checking for required sheets...")
+    logger.info("\n=== SHEET PROCESSING REPORT ===")
+    logger.info("Checking for required sheets...")
     
     # First check if we have merged sheets
     has_merged_sheets = False
@@ -179,14 +194,14 @@ def ensure_all_sheets_exist(xds):
         cleaned_name = clean_sheet_name(original_name)
         if cleaned_name in ['consumermerged', 'commercialmerged']:
             has_merged_sheets = True
-            print(f"? Found merged sheet: {original_name}")
+            logger.info(f"? Found merged sheet: {original_name}")
             processed_sheets[cleaned_name] = xds[original_name]
             existing_sheets.append(original_name)
     
     # If we have merged sheets, skip generating missing sheets
     if has_merged_sheets:
-        print("\n=== MERGED SHEETS DETECTED ===")
-        print("Skipping generation of missing sheets as merged sheets are present")
+        logger.info("\n=== MERGED SHEETS DETECTED ===")
+        logger.info("Skipping generation of missing sheets as merged sheets are present")
         return processed_sheets
     
     # Regular sheet processing if no merged sheets found
@@ -198,7 +213,7 @@ def ensure_all_sheets_exist(xds):
         sheet_exists = False
         for original_name in xds.keys():
             if clean_sheet_name(original_name) == cleaned_name:
-                print(f"? Found existing sheet: {original_name}")
+                logger.info(f"? Found existing sheet: {original_name}")
                 processed_sheets[cleaned_name] = xds[original_name]
                 sheet_exists = True
                 existing_sheets.append(sheet_name)
@@ -206,24 +221,24 @@ def ensure_all_sheets_exist(xds):
         
         # If sheet doesn't exist, create it
         if not sheet_exists:
-            print(f"? Missing sheet detected: {sheet_name}")
-            print(f"? Generating new sheet: {sheet_name}")
-            print(f"  - Adding {len(mapping)} columns based on template")
+            logger.info(f"? Missing sheet detected: {sheet_name}")
+            logger.info(f"? Generating new sheet: {sheet_name}")
+            logger.info(f"  - Adding {len(mapping)} columns based on template")
             processed_sheets[cleaned_name] = create_empty_sheet(mapping)
             missing_sheets.append(sheet_name)
     
     # Summary report
-    print("\n=== SHEET GENERATION SUMMARY ===")
-    print(f"Total sheets required: {len(expected_sheets)}")
-    print(f"Sheets found in upload: {len(existing_sheets)}")
-    print(f"Sheets auto-generated: {len(missing_sheets)}")
+    logger.info("\n=== SHEET GENERATION SUMMARY ===")
+    logger.info(f"Total sheets required: {len(expected_sheets)}")
+    logger.info(f"Sheets found in upload: {len(existing_sheets)}")
+    logger.info(f"Sheets auto-generated: {len(missing_sheets)}")
     
     if missing_sheets:
-        print("\nAuto-generated sheets:")
+        logger.info("\nAuto-generated sheets:")
         for sheet in missing_sheets:
-            print(f"- {sheet}")
+            logger.info(f"- {sheet}")
     
-    print("\n=============================")
+    logger.info("\n=============================")
     
     return processed_sheets
 
@@ -251,6 +266,11 @@ def preprocess_tenor_from_headers(df):
     pattern = r'\b(' + '|'.join(header_unit_multipliers.keys()) + r')\b'
 
     for col in df_copy.columns:
+        # Skip arrears columns - they are handled by preprocess_arrears_from_headers
+        col_lower = str(col).lower().replace(' ', '').replace('_', '')
+        if 'arrears' in col_lower or 'dpd' in col_lower or 'overdue' in col_lower or 'pastdue' in col_lower:
+            continue
+        
         # Search for a unit in the column name (case-insensitive)
         match = re.search(pattern, col, re.IGNORECASE)
         
@@ -258,7 +278,7 @@ def preprocess_tenor_from_headers(df):
             unit_found = match.group(0).lower()
             multiplier = header_unit_multipliers[unit_found]
             
-            print(f"Found unit '{unit_found}' in header '{col}'. Applying multiplier: {multiplier}")
+            logger.info(f"Found unit '{unit_found}' in header '{col}'. Applying multiplier: {multiplier}")
             
             # Apply the multiplier to the column.
             # pd.to_numeric converts numbers; errors='coerce' handles non-numbers gracefully.
@@ -269,10 +289,96 @@ def preprocess_tenor_from_headers(df):
     
     return df_copy
 
+def preprocess_arrears_from_headers(df):
+    """
+    Preprocess arrears columns (DAYSINARREARS, MONTHSINARREARS, etc.):
+    1. Extract only numeric values from text (e.g., 'over 500 days' → 500)
+    2. If column name indicates months, multiply by 30 to convert to days
+    
+    This runs BEFORE column mapping, so works on original column names.
+    """
+    df_copy = df.copy()
+    
+    # Patterns that indicate months (need to multiply by 30)
+    months_patterns = ['monthsinarrears', 'monthinarrears', 'montharrears', 
+                       'monthsarrears', 'dpdinmonths', 'arrearsinmonths']
+    
+    # Patterns that indicate arrears columns we should process
+    arrears_patterns = months_patterns + [
+        'daysinarrears', 'daysoverdue', 'dayspastdue', 'dpd',
+        'numberofdayspastdue', 'numberofdaysoverdue', 'noofdaysoverdue',
+        'overduedaysprin', 'daysareas'
+    ]
+    
+    for col in df_copy.columns:
+        col_lower = str(col).lower().replace(' ', '').replace('_', '')
+        
+        # Check if this column matches any arrears pattern
+        is_arrears_col = any(pattern in col_lower for pattern in arrears_patterns)
+        
+        if not is_arrears_col:
+            continue
+        
+        # Check if this is a months column (needs × 30)
+        # Check both: full patterns AND standalone months in parentheses
+        is_months = any(pattern in col_lower for pattern in months_patterns)
+        
+        # Also check for months unit in parentheses like "(months)" or "(month)" or "(mths)"
+        if not is_months:
+            months_unit_pattern = re.search(r'\((?:months?|mths?|mnths?)\)', col_lower)
+            is_months = months_unit_pattern is not None
+        
+        multiplier = 30 if is_months else 1
+        
+        if is_months:
+            logger.info(f"Found months arrears column '{col}'. Will multiply by 30.")
+        else:
+            logger.info(f"Processing arrears column '{col}' - extracting numbers.")
+        
+        def extract_and_convert(value):
+            if pd.isna(value) or value == '':
+                return ''
+            
+            value_str = str(value).strip()
+            
+            # Find all numbers in the string
+            numbers = re.findall(r'\d+', value_str)
+            
+            if not numbers:
+                return ''
+            
+            # Use the first number found
+            num = int(numbers[0])
+            
+            # Apply multiplier if months column
+            result = num * multiplier
+            
+            return str(result)
+        
+        df_copy[col] = df_copy[col].apply(extract_and_convert)
+    
+    return df_copy
+
 def clean_sheet_name(sheet_name):
-    """Clean sheet names by removing special characters"""
-    cleaned_name = re.sub(r'[^a-zA-Z0-9]', '', sheet_name)  
-    return cleaned_name.lower()
+    """
+    Clean sheet names by removing special characters and normalize common variations
+    to canonical sheet type names.
+    
+    This allows users to name their sheets flexibly while still getting
+    proper column mapping and processing applied.
+    
+    Uses sheet_name_mappings from map.py for the normalization.
+    """
+    # First, clean the sheet name (remove special chars, lowercase)
+    cleaned_name = re.sub(r'[^a-zA-Z0-9]', '', sheet_name).lower()
+    
+    # Check if cleaned name matches any known variation (from map.py)
+    if cleaned_name in sheet_name_mappings:
+        return sheet_name_mappings[cleaned_name]
+    
+    # If no exact match, return the cleaned name as-is
+    return cleaned_name
+
 
 def make_column_names_unique(df):
     """
@@ -366,7 +472,7 @@ def remove_duplicate_columns(df):
     # Log column removals
     columns_removed = len(df.columns) - len(unique_columns)
     if columns_removed > 0:
-        print(f"Removed {columns_removed} duplicate columns: {duplicate_columns}")
+        logger.info(f"Removed {columns_removed} duplicate columns: {duplicate_columns}")
     
     return df_cleaned
 
@@ -481,7 +587,7 @@ def convert_date(date_string):
             if date.year < 1900:
                 return None
             return f"{date.year:04d}{date.month:02d}{date.day:02d}"
-    except:
+    except Exception:
         pass
         
     return None
@@ -500,7 +606,7 @@ def convert_date_cached(date_string):
     return convert_date(date_string)
 
 
-def process_dates_vectorized(df):
+def process_dates_vectorized(df, cutoff_date=None):
     """
     Optimized vectorized date processing - 10-50x faster than row-by-row .apply()
     
@@ -508,6 +614,10 @@ def process_dates_vectorized(df):
     - Returns YYYYMMDD format strings
     - Returns None for invalid/missing dates
     - Handles Excel serials, multiple text formats, 2-digit year sliding window
+    
+    For LOANEFFECTIVEDATE and ACCOUNTSTATUSDATE columns with cutoff_date:
+    - If MDY interpretation gives date > cutoff, tries DMY interpretation
+    - This handles ambiguous dates like 03/05/2024 that could be March 5 or May 3
     """
     date_columns = [
         'DATEOFBIRTH', 'DATEOFINCORPORATION', 
@@ -517,13 +627,16 @@ def process_dates_vectorized(df):
         'DEFEREDPAYMENTDATE', 'LITIGATIONDATE', 'ACCOUNTSTATUSDATE'
     ]
     
+    # Columns that need cutoff validation for MDY/DMY switching
+    cutoff_columns = ['LOANEFFECTIVEDATE', 'ACCOUNTSTATUSDATE']
+    
     missing_values = ["", "None", "NaN", "null", "N/A", "n/a", "na", "NA", "#N/A", "?", "missing", 'N.A', 'nan']
     
     for col in df.columns:
         if 'date' not in col.lower() and col not in date_columns:
             continue
             
-        print(f"[OPTIMIZED] Processing date column: {col}")
+        logger.info(f"[OPTIMIZED] Processing date column: {col}")
         original_count = len(df)
         
         # Step 1: Convert to string, strip whitespace
@@ -546,7 +659,7 @@ def process_dates_vectorized(df):
             
             valid_mask = (years >= 1900) & (years <= 2100) & (months >= 1) & (months <= 12) & (days >= 1) & (days <= 31)
             result[mask_yyyymmdd] = valid_yyyymmdd.where(valid_mask, None)
-            print(f"  - Found {mask_yyyymmdd.sum()} already-formatted YYYYMMDD dates")
+            logger.info(f"  - Found {mask_yyyymmdd.sum()} already-formatted YYYYMMDD dates")
         
         # Step 4: Try numeric (Excel serial) conversion (vectorized)
         remaining_mask = result.isna() & series.notna()
@@ -566,9 +679,9 @@ def process_dates_vectorized(df):
                     # Filter out dates before 1900
                     valid_excel = excel_dates[excel_dates.dt.year >= 1900]
                     result.loc[valid_excel.index] = valid_excel.dt.strftime('%Y%m%d')
-                    print(f"  - Converted {is_excel_serial.sum()} Excel serial dates")
+                    logger.info(f"  - Converted {is_excel_serial.sum()} Excel serial dates")
                 except Exception as e:
-                    print(f"  - Excel serial conversion error: {e}")
+                    logger.info(f"  - Excel serial conversion error: {e}")
         
         # Step 5: Try pandas datetime parsing (vectorized - handles most text formats)
         # IMPORTANT: Must try 4-digit year formats BEFORE 2-digit to match original logic
@@ -608,7 +721,7 @@ def process_dates_vectorized(df):
                     )
                     valid = parsed[parsed.dt.year >= 1900]
                     result.loc[valid.index] = valid.dt.strftime('%Y%m%d')
-                except:
+                except Exception:
                     continue
             
             # Update remaining mask after 4-digit attempts
@@ -662,36 +775,109 @@ def process_dates_vectorized(df):
                             adjusted = parsed.dropna().apply(apply_sliding_window)
                             valid = adjusted[adjusted.dt.year >= 1900]
                             result.loc[valid.index] = valid.dt.strftime('%Y%m%d')
-                    except:
+                    except Exception:
                         continue
             
             parsed_count = result.notna().sum() - mask_yyyymmdd.sum() - (is_excel_serial.sum() if 'is_excel_serial' in locals() else 0)
             if parsed_count > 0:
-                print(f"  - Parsed {parsed_count} dates using explicit formats")
+                logger.info(f"  - Parsed {parsed_count} dates using explicit formats")
         
         # Step 6: Fallback to cached convert_date for remaining edge cases
         remaining_mask = result.isna() & series.notna()
         remaining_count = remaining_mask.sum()
         
         if remaining_count > 0:
-            print(f"  - Using cached fallback for {remaining_count} edge cases")
+            logger.info(f"  - Using cached fallback for {remaining_count} edge cases")
             # Use cached version to avoid re-processing same values
             result[remaining_mask] = series[remaining_mask].apply(convert_date_cached)
+        
+        # Step 7: For LOANEFFECTIVEDATE and ACCOUNTSTATUSDATE, apply cutoff validation
+        # If a date is beyond cutoff and could be interpreted as DMY instead of MDY, swap it
+        if col in cutoff_columns and cutoff_date is not None:
+            logger.info(f"  - Applying cutoff validation for {col} (cutoff: {cutoff_date.strftime('%Y-%m-%d')})")
+            
+            def validate_with_cutoff(row_idx):
+                """Check if date needs MDY->DMY swap based on cutoff"""
+                date_str = result[row_idx]
+                original_str = series[row_idx]
+                
+                if pd.isna(date_str) or pd.isna(original_str):
+                    return date_str
+                
+                try:
+                    # Parse the result date
+                    parsed_date = datetime.strptime(str(date_str), '%Y%m%d')
+                    
+                    # If date is beyond cutoff, check if original string is ambiguous
+                    if parsed_date > cutoff_date:
+                        original_clean = str(original_str).strip()
+                        
+                        # Check if it's an ambiguous date pattern (like 03/05/2024)
+                        import re
+                        if re.match(r'^\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}$', original_clean):
+                            # Try DMY interpretation
+                            dmy_formats = ['%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%d/%m/%y', '%d-%m-%y', '%d.%m.%y']
+                            for fmt in dmy_formats:
+                                try:
+                                    dmy_parsed = datetime.strptime(original_clean, fmt)
+                                    # Apply sliding window for 2-digit years
+                                    if dmy_parsed.year < 100:
+                                        two_digit = dmy_parsed.year % 100
+                                        if 0 <= two_digit <= 29:
+                                            dmy_parsed = dmy_parsed.replace(year=2000 + two_digit)
+                                        else:
+                                            dmy_parsed = dmy_parsed.replace(year=1900 + two_digit)
+                                    
+                                    # If DMY is valid and <= cutoff, use it
+                                    if dmy_parsed >= datetime(1900, 1, 1) and dmy_parsed <= cutoff_date:
+                                        logger.info(f"    - Swapped MDY->DMY for '{original_clean}': {date_str} -> {dmy_parsed.strftime('%Y%m%d')}")
+                                        return dmy_parsed.strftime('%Y%m%d')
+                                except ValueError:
+                                    continue
+                    
+                    return date_str
+                except Exception:
+                    return date_str
+            
+            # Apply cutoff validation row by row (only for this specific column)
+            for idx in result.index:
+                result[idx] = validate_with_cutoff(idx)
+            
+            # Count how many dates are still beyond cutoff (for logging)
+            future_count = 0
+            for idx in result.index:
+                if pd.notna(result[idx]):
+                    try:
+                        d = datetime.strptime(str(result[idx]), '%Y%m%d')
+                        if d > cutoff_date:
+                            future_count += 1
+                    except:
+                        pass
+            if future_count > 0:
+                logger.warning(f"  - {future_count} dates still beyond cutoff after MDY/DMY swap attempt")
         
         # Assign back to dataframe
         df[col] = result
         
         # Print summary
         valid_count = df[col].notna().sum()
-        print(f"  - Result: {valid_count}/{original_count} valid dates ({valid_count/original_count*100:.1f}%)")
+        if original_count > 0:
+            logger.info(f"  - Result: {valid_count}/{original_count} valid dates ({valid_count/original_count*100:.1f}%)")
+        else:
+            logger.info(f"  - Result: {valid_count}/{original_count} valid dates (N/A - no records)")
     
     return df
 
 
-def process_dates(df):
-    """Process date fields in the DataFrame with optimized vectorized operations"""
+def process_dates(df, cutoff_date=None):
+    """Process date fields in the DataFrame with optimized vectorized operations
+    
+    Args:
+        df: DataFrame to process
+        cutoff_date: Optional datetime object for LOANEFFECTIVEDATE/ACCOUNTSTATUSDATE validation
+    """
     # Use the optimized vectorized version
-    return process_dates_vectorized(df)
+    return process_dates_vectorized(df, cutoff_date=cutoff_date)
 
 
 def remove_special_chars(text):
@@ -734,6 +920,39 @@ def clean_name_preserving_special_chars(text):
     
     return text.strip()
 
+def clean_business_name(df):
+    """
+    Clean business name columns by removing purely numeric values.
+    Values like '0', '000', '123', '0.00', '11111' are cleared.
+    Business names should contain letters.
+    
+    Args:
+        df: DataFrame to process
+    Returns:
+        DataFrame with cleaned business name columns
+    """
+    business_name_columns = ['BUSINESSNAME', 'SURNAME']
+    
+    def is_purely_numeric(value):
+        """Check if value is purely numeric with 6 or fewer digits"""
+        if not value or not isinstance(value, str):
+            return False
+        value = str(value).strip()
+        # Remove decimal points and commas, check if remaining is all digits
+        cleaned = value.replace('.', '').replace(',', '')
+        if not cleaned:
+            return False
+        # If all remaining characters are digits AND 6 or fewer, clear it
+        # Keep values with 7+ digits (could be registration/CAC numbers)
+        return cleaned.isdigit() and len(cleaned) <= 6
+    
+    for col in business_name_columns:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: '' if is_purely_numeric(x) else x)
+            logger.info(f"Cleaned purely numeric values from column: {col}")
+    
+    return df
+
 def process_names(df):
     """Process names before column mapping"""
     if df is None or df.empty:
@@ -750,8 +969,8 @@ def process_names(df):
     for group_name, name_columns in name_groups.items():
         if all(col in df.columns for col in name_columns):
             # Debug print
-            print(f"\nProcessing group: {group_name}")
-            print("Original columns:", df[name_columns].head())
+            logger.info(f"\nProcessing group: {group_name}")
+            logger.info(f"Original columns:\n{df[name_columns].head()}")
             
             # Explicitly clean columns
             for col in name_columns:
@@ -759,31 +978,53 @@ def process_names(df):
                 df[col] = df[col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else str(x).strip())
             
             # Print after initial cleaning
-            print("After initial cleaning:", df[name_columns].head())
+            logger.info(f"After initial cleaning:\n{df[name_columns].head()}")
             
             # Remove titles and clean names while preserving special characters
             for col in name_columns:
                 df[col] = df[col].apply(remove_titles).apply(clean_name_preserving_special_chars)
             
+            # Clear purely numeric values from name columns (no letters = not a name)
+            for col in name_columns:
+                df[col] = df[col].apply(
+                    lambda x: '' if x and re.sub(r'[^a-zA-Z]', '', str(x)) == '' else x
+                )
+            
             # Combine non-empty name components
             def combine_names(row):
-                # Filter out empty strings before joining
-                name_components = [
-                    row[name_columns[0]], 
-                    row[name_columns[1]], 
-                    row[name_columns[2]]
-                ]
-                # Remove empty strings
-                name_components = [comp for comp in name_components if comp]
+                # Get the three name components
+                surname = row[name_columns[0]]
+                firstname = row[name_columns[1]]
+                middlename = row[name_columns[2]]
                 
-                # Join non-empty components
+                # Check if all 3 columns have the same value (duplicate full name scenario)
+                # If so, only use the first one to avoid concatenation issues
+                if surname == firstname == middlename and surname:
+                    return surname  # Use only the first occurrence
+                
+                # Check if 2 columns are the same
+                if surname == firstname and surname:
+                    # Surname and firstname are same, use surname + middlename
+                    name_components = [surname, middlename] if middlename else [surname]
+                elif firstname == middlename and firstname:
+                    # Firstname and middlename are same, use surname + firstname
+                    name_components = [surname, firstname] if surname else [firstname]
+                elif surname == middlename and surname:
+                    # Surname and middlename are same, use surname + firstname
+                    name_components = [surname, firstname] if firstname else [surname]
+                else:
+                    # Normal case: all different or some empty
+                    name_components = [surname, firstname, middlename]
+                
+                # Remove empty strings and join
+                name_components = [comp for comp in name_components if comp]
                 return ' '.join(name_components)
             
             temp_full_name = f'FULL_NAME_{group_name}'
             df[temp_full_name] = df.apply(combine_names, axis=1)
             
             # Print combined names
-            print("Combined names:", df[temp_full_name].head())
+            logger.info(f"Combined names:\n{df[temp_full_name].head()}")
             
             # Split the full name back into components
             name_parts = df[temp_full_name].apply(lambda x: pd.Series(x.split(maxsplit=2) + ['', '', ''])[:3])
@@ -794,7 +1035,7 @@ def process_names(df):
             df[name_columns[2]] = name_parts[2]
             
             # Print final processed columns
-            print("Final processed columns:", df[name_columns].head())
+            logger.info(f"Final processed columns:\n{df[name_columns].head()}")
             
             # Drop the temporary column
             df = df.drop(temp_full_name, axis=1)
@@ -803,7 +1044,11 @@ def process_names(df):
             for col in name_columns:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else str(x).strip())
-                    df[col] = df[col].apply(remove_titles).apply(clean_name_preserving_special_chars)    
+                    df[col] = df[col].apply(remove_titles).apply(clean_name_preserving_special_chars)
+                    # Clear purely numeric values (no letters = not a name)
+                    df[col] = df[col].apply(
+                        lambda x: '' if x and re.sub(r'[^a-zA-Z]', '', str(x)) == '' else x
+                    )
     return df
 
 def rename_columns_with_fuzzy_rapidfuzz(df, mapping, threshold=90):
@@ -835,12 +1080,12 @@ def rename_columns_with_fuzzy_rapidfuzz(df, mapping, threshold=90):
                 # Check for key conflict: if mapped_column already exists in df.columns (and is not the current column)
                 if mapped_column in df.columns and column != mapped_column:
                     columns_to_drop.append(column)
-                    print(f"Column {column} dropped due to key conflict with {mapped_column}.")
+                    logger.info(f"Column {column} dropped due to key conflict with {mapped_column}.")
                 else:
                     df.rename(columns={column: mapped_column}, inplace=True)
                     renamed_columns.add(mapped_column)
                     used_keys_mapping[mapped_column] = column
-                    print(f"Renamed {column} to {mapped_column}")
+                    logger.info(f"Renamed {column} to {mapped_column}")
                 found_match = True
                 break
 
@@ -851,15 +1096,15 @@ def rename_columns_with_fuzzy_rapidfuzz(df, mapping, threshold=90):
                 # Check for key conflict: if fuzzy_match_result already exists in df.columns (and is not the current column)
                 if fuzzy_match_result in df.columns and column != fuzzy_match_result:
                     columns_to_drop.append(column)
-                    print(f"Column {column} dropped due to key conflict with {fuzzy_match_result} (fuzzy match).")
+                    logger.info(f"Column {column} dropped due to key conflict with {fuzzy_match_result} (fuzzy match).")
                 elif used_keys_mapping[fuzzy_match_result] is None:
                     df.rename(columns={column: fuzzy_match_result}, inplace=True)
                     renamed_columns.add(fuzzy_match_result)
                     used_keys_mapping[fuzzy_match_result] = column
-                    print(f"Fuzzy matched {column} to {fuzzy_match_result}")
+                    logger.info(f"Fuzzy matched {column} to {fuzzy_match_result}")
                 else:
                     columns_to_drop.append(column)
-                    print(f"Column {column} dropped due to key conflict (fuzzy match already used).")
+                    logger.info(f"Column {column} dropped due to key conflict (fuzzy match already used).")
 
     # Drop all columns that were marked for dropping
     if columns_to_drop:
@@ -889,7 +1134,7 @@ def fill_data_column(df):
     if 'DATA' in df.columns:
         df['DATA'] = 'D'
     else:
-        print("===========================")
+        logger.info("===========================")
     return df
 
 def fill_depend_column(df):
@@ -899,7 +1144,7 @@ def fill_depend_column(df):
     if 'DEPENDANTS' in df.columns:
         df['DEPENDANTS'] = df['DEPENDANTS'].apply(lambda x: '00' if pd.isna(x) or str(x).strip() in ['', 'None', 'nan', 'null', 'nill', 'nil', 'na', 'n/a'] else x)
     else:
-        print("\n=== DEPENDANTS COLUMN NOT FOUND ===") 
+        logger.info("\n=== DEPENDANTS COLUMN NOT FOUND ===") 
     return df
 
 def process_gender(df):
@@ -922,9 +1167,9 @@ def process_gender(df):
                     df[col] = df[col].apply(lambda x: re.sub(r'[^a-zA-Z0-9]', '', x) if isinstance(x, str) else x)
                     df[col] = df[col].apply(map_gender)
                 else:
-                    print(f"No non-null values found in column '{col}'.")
+                    logger.info(f"No non-null values found in column '{col}'.")
             except Exception as e:
-                print(f"Error processing column '{col}': {e}")
+                logger.info(f"Error processing column '{col}': {e}")
     return df
 
 def map_gender(value):
@@ -980,7 +1225,7 @@ def process_nationality(df):
                 return None          
             return value        
         except Exception as e:
-            print(f"Error cleaning country value '{value}': {e}")
+            logger.info(f"Error cleaning country value '{value}': {e}")
             return None
     def standardize_country(value):
         """Enhanced country standardization with detailed logging"""
@@ -992,7 +1237,7 @@ def process_nationality(df):
                     return standard_name           
             return None       
         except Exception as e:
-            print(f"Error standardizing country '{value}': {e}")
+            logger.info(f"Error standardizing country '{value}': {e}")
             return None    
     # Find columns that exist in the DataFrame
     found_columns = [col for col in nationality_columns if col in df.columns]   
@@ -1003,10 +1248,10 @@ def process_nationality(df):
                 df[column] = df[column].apply(clean_country_value)
                 df[column] = df[column].apply(standardize_country)              
             else:
-                print(f"SKIP: No non-null values in column {column}")  
+                logger.info(f"SKIP: No non-null values in column {column}")  
         except Exception as column_e:
-            print(f"? FAILED to process column {column}: {column_e}")
-            print(traceback.format_exc())
+            logger.info(f"? FAILED to process column {column}: {column_e}")
+            logger.info(traceback.format_exc())
     return df
 
 
@@ -1064,7 +1309,8 @@ def process_special_characters(df):
         'INDIVIDUALGUARANTORMIDDLENAME',
         'PRINCIPALOFFICERSURNAME',
         'PRINCIPALOFFICERFIRSTNAME',
-        'PRINCIPALOFFICERMIDDLENAME'
+        'PRINCIPALOFFICERMIDDLENAME',
+        'CURRENCY',
     ]
 
     # List of columns that should preserve '&'
@@ -1123,7 +1369,7 @@ def process_special_characters(df):
                 # Remove double spaces
                 df[column] = df[column].apply(lambda x: re.sub(r'\s+', ' ', x).strip() if isinstance(x, str) else x)
         except Exception as e:
-            print(f"Error processing column {column}: {e}")
+            logger.info(f"Error processing column {column}: {e}")
 
     # Now handle specific columns to remove spaces
     # ------------------------------------------------# take notr of this.-------------------------------------------------------
@@ -1160,7 +1406,7 @@ def process_special_characters(df):
                 else ''
                 )
             except Exception as e:
-                print(f"Error processing email column {col}: {e}")
+                logger.info(f"Error processing email column {col}: {e}")
     
     return df
 
@@ -1176,7 +1422,7 @@ def replace_ampersands(df):
             df[column] = df[column].apply(
                 lambda x: str(x).replace('&', ' And ') if pd.notna(x) else x
             )
-    print("Replaced '&' with 'And' across all string columns")
+    logger.info("Replaced '&' with 'And' across all string columns")
     return df
 
 def process_passport_number(df):
@@ -1693,7 +1939,7 @@ def positioninBusiness(df):
     # Iterate through the list of potential account status columns
     for col in status_columns:
         if col in df.columns:
-            print(f"Processing account status column: {col}")
+            logger.info(f"Processing account status column: {col}")
             
             # Clean the account status values
             df[col] = df[col].apply(lambda x: x.lower() if isinstance(x, str) else x)
@@ -1701,7 +1947,7 @@ def positioninBusiness(df):
             df[col] = df[col].apply(map_poistioninBusiness)
             
             # Print unique values after processing
-            print(f"Unique values in {col} after processing:", df[col].unique())
+            logger.info(f"Unique values in {col} after processing: {df[col].unique()}")
     
     return df
 
@@ -1718,11 +1964,11 @@ def clear_previous_info_columns(df):
         'PICTUREFILEPATH'
     ]
     
-    print("\n=== CLEARING PREVIOUS INFO COLUMNS ===")
+    logger.info("\n=== CLEARING PREVIOUS INFO COLUMNS ===")
     for col in columns_to_clear:
         if col in df.columns:
             df[col] = ''
-    print("Previous info columns cleared")  
+    logger.info("Previous info columns cleared")  
     return df
 def map_accountStatus(value):
     """Maps account status values to standardized format."""
@@ -1752,7 +1998,7 @@ def process_account_status(df):
     # Iterate through the list of potential account status columns
     for col in status_columns:
         if col in df.columns:
-            print(f"Processing account status column: {col}")
+            logger.info(f"Processing account status column: {col}")
             
             # Clean the account status values
             df[col] = df[col].apply(lambda x: x.lower() if isinstance(x, str) else x)
@@ -1760,7 +2006,7 @@ def process_account_status(df):
             df[col] = df[col].apply(map_accountStatus)
             
             # Print unique values after processing
-            print(f"Unique values in {col} after processing:", df[col].unique())
+            logger.info(f"Unique values in {col} after processing: {df[col].unique()}")
     
     return df
 
@@ -1793,38 +2039,67 @@ def process_loan_type(df):
     
     return df
 def map_currency(value):
-    """Maps currency values to standardized format."""
+    """Maps currency values to standardized format.
+    
+    Replaces currency symbols with their codes before cleaning,
+    then matches against Currency_dict.
+    """
+    original_value = value  # For logging
+    
     if pd.isna(value) or value is None:
         return None
     
-    # Convert to string and clean
-    value = str(value).lower()
-    value = re.sub(r'[^a-zA-Z0-9]', '', value)
+    value_str = str(value).strip()
+    
+    if not value_str:
+        return None
+    
+    # FIRST: Replace currency symbols with their codes BEFORE any cleaning
+    # This ensures symbols like ₦, $, £, € are converted to matchable text
+    symbol_replacements = {'₦': 'NGN', '$': 'USD', '£': 'GBP', '€': 'EUR'}
+    for symbol, code in symbol_replacements.items():
+        if symbol in value_str:
+            value_str = code  # Replace entire value with the code
+            logger.info(f"CURRENCY: '{original_value}' -> symbol '{symbol}' found, replaced with '{code}'")
+            break
+    
+    # SECOND: Clean and match against Currency_dict
+    value_clean = re.sub(r'[^a-zA-Z0-9]', '', value_str.lower())
+    
+    if not value_clean:
+        logger.info(f"CURRENCY: '{original_value}' -> None (empty after cleaning)")
+        return None
     
     for category, values in Currency_dict.items():
         # Convert dictionary values to lowercase and remove special characters for comparison
-        dict_values = [str(v).lower().replace(r'[^a-zA-Z0-9]', '') for v in values]
-        if value in dict_values:
+        dict_values = [re.sub(r'[^a-zA-Z0-9]', '', str(v).lower()) for v in values]
+        if value_clean in dict_values:
+            logger.info(f"CURRENCY: '{original_value}' -> '{category}' (matched '{value_clean}')")
             return category
-    return None   # Return None if no match is found
+    
+    logger.info(f"CURRENCY: '{original_value}' -> None (no match for '{value_clean}')")
+    return None
 
 def process_currency(df):
     """Process currency fields in the DataFrame."""
-    currency_columns = [
-        'CURRENCY'
-    ]
+    currency_columns = ['CURRENCY']
     
     for col in currency_columns:
         if col in df.columns:
-            print(f"Processing currency column: {col}")
+            # Log RAW values BEFORE any processing
+            raw_unique = df[col].dropna().unique()[:10]  # First 10 unique values
+            logger.info(f"CURRENCY RAW VALUES BEFORE processing: {list(raw_unique)}")
+            # Also log the repr to see hidden Unicode
+            for val in raw_unique[:5]:
+                logger.info(f"CURRENCY RAW repr: {repr(val)}")
             
-            # Clean the currency values
-            df[col] = df[col].apply(lambda x: x.lower() if isinstance(x, str) else x)
-            df[col] = df[col].apply(lambda x: re.sub(r'[^a-zA-Z0-9\s]', '', x) if isinstance(x, str) else x)  # Allow spaces
+            logger.info(f"Processing currency column: {col}")
+            
+            # Apply map_currency directly - it handles symbol replacement internally
             df[col] = df[col].apply(map_currency)
             
             # Print unique values after processing
-            print(f"Unique values in {col} after processing:", df[col].unique())
+            logger.info(f"Unique values in {col} after processing: {df[col].unique()}")
     
     return df
 
@@ -1909,7 +2184,7 @@ def process_phone_columns(df):
             # Process phone number columns
             for col in phone_columns:
                 if col in df.columns:
-                    print(f"Processing phone number column: {col}")
+                    logger.info(f"Processing phone number column: {col}")
                     df[col] = df[col].astype(str)
                     
                     # First extract only digits from the string, keeping spaces to separate numbers
@@ -1953,7 +2228,7 @@ def process_phone_columns(df):
                     df[col] = df[col].replace({'nan': ''})
     
     except Exception as e:
-        print(f"Error in process_phone_columns: {e}")
+        logger.info(f"Error in process_phone_columns: {e}")
         traceback.print_exc()
     
     return df
@@ -2045,11 +2320,11 @@ def process_loan_tenor(df):
         DataFrame with processed loan tenor
     """
     if df is None:
-        print("Input DataFrame is None.")
+        logger.info("Input DataFrame is None.")
         return None
 
     if not isinstance(df, pd.DataFrame):
-        print("Input is not a valid DataFrame.")
+        logger.info("Input is not a valid DataFrame.")
         return None
 
     # Columns to process for loan tenor
@@ -2060,7 +2335,7 @@ def process_loan_tenor(df):
     # Process each potential tenor column
     for col in tenor_columns:
         if col in df.columns:
-            print(f"Processing column: {col}")
+            logger.info(f"Processing column: {col}")
 
             # Apply conversion
 
@@ -2070,7 +2345,7 @@ def process_loan_tenor(df):
             # Replace NaN with empty string, otherwise convert to int then string
             df[col] = numeric_series.apply(lambda x: '' if pd.isna(x) else str(int(np.ceil(x))))
         else:
-            print(f"Column {col} not found in DataFrame.")
+            logger.info(f"Column {col} not found in DataFrame.")
 
     return df
 
@@ -2123,7 +2398,7 @@ def try_convert_to_float(x):
         try:
             float_value = float(x_no_currency)
             return '{:.2f}'.format(float_value)
-        except:
+        except Exception:
             return ''
     
     try:
@@ -2162,14 +2437,14 @@ def process_numeric_columns(df):
     
     for col in numeric_columns:
         if col in df.columns:
-            print(f"Processing numeric column: {col}")
+            logger.info(f"Processing numeric column: {col}")
             
             # Apply the enhanced conversion function - this will retain original values that can't be converted
             df[col] = df[col].apply(try_convert_to_float)
             
             # Print sample values after processing for verification
-            print(f"Sample values in {col} after processing:")
-            print(df[col].head())
+            logger.info(f"Sample values in {col} after processing:")
+            logger.info(df[col].head())
     
     return df
 
@@ -2259,9 +2534,28 @@ def calculate_credit_unmerged_records(borrower_df, credit_df, borrower_type="ind
         if not valid_borrowers.empty:
             borrower_customer_ids = set(valid_borrowers['CUSTOMERID'].str.strip())
     
-    # Count records that match vs don't match
-    matched_records = valid_credit_records[valid_credit_records['MATCH_ID'].isin(borrower_customer_ids)]
-    unmerged_records = valid_credit_records[~valid_credit_records['MATCH_ID'].isin(borrower_customer_ids)]
+    # A credit record is considered "matched" if:
+    # 1. Its MATCH_ID (CUSTOMERID or ACCOUNTNUMBER) matches a borrower's CUSTOMERID, OR
+    # 2. Its ACCOUNTNUMBER matches a borrower's CUSTOMERID (fallback merge scenario)
+    
+    # Check primary match: MATCH_ID in borrower_customer_ids
+    primary_match_mask = valid_credit_records['MATCH_ID'].isin(borrower_customer_ids)
+    
+    # Check fallback match: ACCOUNTNUMBER in borrower_customer_ids
+    # This handles the case where merge_individual_borrowers matched on CUSTOMERID (indi) -> ACCOUNTNUMBER (credit)
+    fallback_match_mask = pd.Series(False, index=valid_credit_records.index)
+    if 'ACCOUNTNUMBER' in valid_credit_records.columns:
+        accountnumber_valid = (
+            valid_credit_records['ACCOUNTNUMBER'].notna() & 
+            (valid_credit_records['ACCOUNTNUMBER'].str.strip() != '')
+        )
+        fallback_match_mask = accountnumber_valid & valid_credit_records['ACCOUNTNUMBER'].str.strip().isin(borrower_customer_ids)
+    
+    # Combined match: either primary OR fallback
+    combined_match_mask = primary_match_mask | fallback_match_mask
+    
+    matched_records = valid_credit_records[combined_match_mask]
+    unmerged_records = valid_credit_records[~combined_match_mask]
     
     # Get sample of unmerged customer IDs for debugging
     unmerged_customer_ids = unmerged_records['MATCH_ID'].unique().tolist()[:10]
@@ -2280,7 +2574,7 @@ def merge_individual_borrowers(consu, credit, guar):
     """Merge individual borrower DataFrames"""
     # Validate DataFrames
     if consu.empty or credit.empty:
-        print("Warning: Individual borrower or credit information DataFrame is empty")
+        logger.info("Warning: Individual borrower or credit information DataFrame is empty")
         return pd.DataFrame(), set()
     
     # Filter out rows with empty or blank 'CUSTOMERID'
@@ -2296,7 +2590,7 @@ def merge_individual_borrowers(consu, credit, guar):
     try:
         # First attempt: Merge on CUSTOMERID
         if 'CUSTOMERID' in credit.columns:
-            print("Attempting primary merge on CUSTOMERID")
+            logger.info("Attempting primary merge on CUSTOMERID")
             indi = pd.merge(
                 consu_cleaned, 
                 credit, 
@@ -2304,17 +2598,17 @@ def merge_individual_borrowers(consu, credit, guar):
                 how='inner',
                 indicator=True  # Add merge indicator
             )
-            print(f"Primary merge matches: {indi.shape[0]} rows")
-            print("Merge indicator counts:")
-            print(indi['_merge'].value_counts())
+            logger.info(f"Primary merge matches: {indi.shape[0]} rows")
+            logger.info("Merge indicator counts:")
+            logger.info(indi['_merge'].value_counts())
             indi = indi.drop(columns=['_merge'])
             merge_attempted = True
     except Exception as e:
-        print(f"Primary merge failed: {str(e)}")
+        logger.info(f"Primary merge failed: {str(e)}")
 
     # Fallback if primary merge failed or resulted in empty DataFrame
     if not merge_attempted or indi.empty:
-        print("Attempting fallback merge with ACCOUNTNUMBER")
+        logger.info("Attempting fallback merge with ACCOUNTNUMBER")
         try:
             if 'ACCOUNTNUMBER' in credit.columns:
                 # Use outer join temporarily to analyze matches
@@ -2326,8 +2620,8 @@ def merge_individual_borrowers(consu, credit, guar):
                     how='outer',
                     indicator=True
                 )
-                print("Fallback merge analysis:")
-                print(temp_merge['_merge'].value_counts())
+                logger.info("Fallback merge analysis:")
+                logger.info(temp_merge['_merge'].value_counts())
                 
                 # Perform actual inner join
                 indi = temp_merge[temp_merge['_merge'] == 'both'].copy()
@@ -2342,24 +2636,24 @@ def merge_individual_borrowers(consu, credit, guar):
                     if 'CUSTOMERID_x' in indi.columns:
                         indi = indi.rename(columns={'CUSTOMERID_x': 'CUSTOMERID'})
                     
-                    print(f"Fallback merge successful: {indi.shape[0]} rows")
+                    logger.info(f"Fallback merge successful: {indi.shape[0]} rows")
                 else:
-                    print("Warning: Fallback merge resulted in empty DataFrame")
+                    logger.info("Warning: Fallback merge resulted in empty DataFrame")
         except Exception as e:
-            print(f"Fallback merge failed: {str(e)}")
+            logger.info(f"Fallback merge failed: {str(e)}")
             return pd.DataFrame(), set()
 
     if indi.empty:
-        print("Error: All merge attempts failed to produce results")
-        print("Consu shape:", consu_cleaned.shape)
-        print("Credit shape:", credit.shape)
+        logger.info("Error: All merge attempts failed to produce results")
+        logger.info(f"Consu shape: {consu_cleaned.shape}")
+        logger.info(f"Credit shape: {credit.shape}")
         return pd.DataFrame(), set()
   
 
 #   --------------------------------------------------TEST THIS MERGE IF ITS OKAY____-----------------------------------------------------
     # Merge with guarantor information (simplified - no fallback logic)
     try:
-        print("Attempting guarantor merge with ACCOUNTNUMBER")
+        logger.info("Attempting guarantor merge with ACCOUNTNUMBER")
         indi = pd.merge(
             indi,
             guar,
@@ -2367,11 +2661,31 @@ def merge_individual_borrowers(consu, credit, guar):
             right_on='CUSTOMERSACCOUNTNUMBER',
             how='left'
         )
-        print(f"Guarantor merge completed. Final shape: {indi.shape}")
+        logger.info(f"Guarantor merge completed. Final shape: {indi.shape}")
             
     except Exception as e:
-        print(f"Guarantor merge failed: {str(e)}")
-        print("Continuing with original data")
+        logger.info(f"Guarantor merge failed: {str(e)}")
+        logger.info("Continuing with original data")
+    
+    # Handle BVNNUMBER column conflicts from individual borrower and credit info merge
+    # Priority: Individual Borrower BVNNUMBER > Credit Info BVNNUMBER
+    if 'BVNNUMBER_x' in indi.columns and 'BVNNUMBER_y' in indi.columns:
+        logger.info("Coalescing BVNNUMBER columns from individual borrower and credit info")
+        # Use individual borrower's BVN if available, otherwise use credit info's BVN
+        indi['BVNNUMBER'] = indi['BVNNUMBER_x'].fillna('')
+        indi.loc[indi['BVNNUMBER'].str.strip() == '', 'BVNNUMBER'] = indi.loc[indi['BVNNUMBER'].str.strip() == '', 'BVNNUMBER_y'].fillna('')
+        # Drop the suffixed columns
+        indi = indi.drop(columns=['BVNNUMBER_x', 'BVNNUMBER_y'], errors='ignore')
+        logger.info("BVNNUMBER columns coalesced successfully")
+    elif 'BVNNUMBER_y' in indi.columns and 'BVNNUMBER' not in indi.columns:
+        # Only credit info had BVNNUMBER
+        indi = indi.rename(columns={'BVNNUMBER_y': 'BVNNUMBER'})
+        logger.info("Using BVNNUMBER from credit info (individual borrower template had none)")
+    elif 'BVNNUMBER_x' in indi.columns:
+        # Only individual borrower had BVNNUMBER 
+        indi = indi.rename(columns={'BVNNUMBER_x': 'BVNNUMBER'})
+        logger.info("Using BVNNUMBER from individual borrower template")
+    
     indi.drop(columns=['NUMBEROFDIRECTORS'], inplace=True)
     
     # Track which credit IDs were successfully matched
@@ -2379,7 +2693,30 @@ def merge_individual_borrowers(consu, credit, guar):
     if not indi.empty and 'CUSTOMERID' in indi.columns:
         matched_credit_ids = set(indi['CUSTOMERID'].dropna().unique())
     
-    print(f"[INDIVIDUAL MERGE] Matched {len(matched_credit_ids)} unique credit customer IDs")
+    logger.info(f"[INDIVIDUAL MERGE] Matched {len(matched_credit_ids)} unique credit customer IDs")
+    
+    # Reorder columns based on consumer_merged_mapping to ensure consistent output
+    # This fixes BVNNUMBER position when it comes from credit info instead of individual template
+    if not indi.empty:
+        # Get the canonical column order from consumer_merged_mapping
+        canonical_order = list(consumer_merged_mapping.keys())
+        
+        # Get current columns that exist in the DataFrame
+        current_columns = list(indi.columns)
+        
+        # Build the reordered column list: canonical columns first (in order), then any extras
+        ordered_columns = []
+        for col in canonical_order:
+            if col in current_columns:
+                ordered_columns.append(col)
+        
+        # Add any columns not in the mapping at the end (preserves extra columns)
+        for col in current_columns:
+            if col not in ordered_columns:
+                ordered_columns.append(col)
+        
+        indi = indi[ordered_columns]
+        logger.info(f"[INDIVIDUAL MERGE] Reordered columns to canonical order. BVNNUMBER position: {ordered_columns.index('BVNNUMBER') + 1 if 'BVNNUMBER' in ordered_columns else 'N/A'}")
     
     return indi, matched_credit_ids
 
@@ -2387,7 +2724,7 @@ def merge_corporate_borrowers(comm, credit, prin):
     """Merge corporate borrower DataFrames"""
     # Validate DataFrames
     if comm.empty or credit.empty:
-        print("Warning: Corporate borrower or credit information DataFrame is empty")
+        logger.info("Warning: Corporate borrower or credit information DataFrame is empty")
         return pd.DataFrame(), set()
     
     # Filter out rows with empty or blank 'CUSTOMERID'
@@ -2403,7 +2740,7 @@ def merge_corporate_borrowers(comm, credit, prin):
     try:
          # First attempt: Merge on CUSTOMERID
         if 'CUSTOMERID' in credit.columns:
-            print("Attempting primary merge on CUSTOMERID")
+            logger.info("Attempting primary merge on CUSTOMERID")
             corpo = pd.merge(
                 comm_cleaned, 
                 credit,
@@ -2411,16 +2748,16 @@ def merge_corporate_borrowers(comm, credit, prin):
                 how='inner',
                 indicator=True
             )
-            print(f"Primary merge matches: {corpo.shape[0]} rows")
-            print("Merge indicator counts:")
-            print(corpo['_merge'].value_counts())
+            logger.info(f"Primary merge matches: {corpo.shape[0]} rows")
+            logger.info("Merge indicator counts:")
+            logger.info(corpo['_merge'].value_counts())
             corpo = corpo.drop(columns=['_merge'])
             merge_attempted = True
     except Exception as e:
-        print(f"Primary merge failed: {str(e)}")
+        logger.info(f"Primary merge failed: {str(e)}")
 # Fallback if primary merge failed or resulted in empty DataFrame
     if not merge_attempted or corpo.empty:
-        print("Attempting fallback merge with ACCOUNTNUMBER")
+        logger.info("Attempting fallback merge with ACCOUNTNUMBER")
         try:
            if 'ACCOUNTNUMBER' in credit.columns:
                 # Use outer join temporarily to analyze matches
@@ -2432,8 +2769,8 @@ def merge_corporate_borrowers(comm, credit, prin):
                     how='outer',
                     indicator=True
                 )
-                print("Fallback merge analysis:")
-                print(temp_merge['_merge'].value_counts())
+                logger.info("Fallback merge analysis:")
+                logger.info(temp_merge['_merge'].value_counts())
  # Perform actual inner join
                 corpo = temp_merge[temp_merge['_merge'] == 'both'].copy()
                 if not corpo.empty:
@@ -2447,20 +2784,20 @@ def merge_corporate_borrowers(comm, credit, prin):
                     if 'CUSTOMERID_x' in corpo.columns:
                         corpo = corpo.rename(columns={'CUSTOMERID_x': 'CUSTOMERID'})
                     
-                    print(f"Fallback merge successful: {corpo.shape[0]} rows")
+                    logger.info(f"Fallback merge successful: {corpo.shape[0]} rows")
                 else:
-                    print("Warning: Fallback merge resulted in empty DataFrame")
+                    logger.info("Warning: Fallback merge resulted in empty DataFrame")
         except Exception as e:
-            print(f"Fallback merge failed: {str(e)}")
+            logger.info(f"Fallback merge failed: {str(e)}")
             return pd.DataFrame(), set()
 
     if corpo.empty:
-        print("Error: All merge attempts failed to produce results")
-        print("Consu shape:", comm_cleaned.shape)
-        print("Credit shape:", credit.shape)
+        logger.info("Error: All merge attempts failed to produce results")
+        logger.info(f"Consu shape: {comm_cleaned.shape}")
+        logger.info(f"Credit shape: {credit.shape}")
         return pd.DataFrame(), set()
-    print("After merging with credit (inner join):")
-    print("corpo shape:", corpo.shape)
+    logger.info("After merging with credit (inner join):")
+    logger.info(f"corpo shape: {corpo.shape}")
 
 
     # Merge with principal officers information
@@ -2472,19 +2809,39 @@ def merge_corporate_borrowers(comm, credit, prin):
             right_on='CUSTOMERID',
             how='left'
         )
-        print(f"principal merge successful. Final shape: {corpo.shape}")
+        logger.info(f"principal merge successful. Final shape: {corpo.shape}")
     except Exception as e:
-        print(f"Principal merge failed: {str(e)}")
-    # else:
-    #     print("No principal information available")
-    corpo.drop(columns=['FACILITYOWNERSHIPTYPE', 'INCOME', 'INCOMEFREQUENCY', 'OWNERTENANT', 'NUMBEROFPARTICIPANTSINJOINTLOAN', 'DEPENDANTS'], inplace=True)
+        logger.info(f"Principal merge failed: {str(e)}")
+    corpo.drop(columns=['FACILITYOWNERSHIPTYPE', 'INCOME', 'INCOMEFREQUENCY', 'OWNERTENANT', 'NUMBEROFPARTICIPANTSINJOINTLOAN', 'DEPENDANTS', 'BVNNUMBER'], inplace=True, errors='ignore')
     
     # Track which credit IDs were successfully matched
     matched_credit_ids = set()
     if not corpo.empty and 'CUSTOMERID' in corpo.columns:
         matched_credit_ids = set(corpo['CUSTOMERID'].dropna().unique())
     
-    print(f"[CORPORATE MERGE] Matched {len(matched_credit_ids)} unique credit customer IDs")
+    logger.info(f"[CORPORATE MERGE] Matched {len(matched_credit_ids)} unique credit customer IDs")
+    
+    # Reorder columns based on commercial_merged_mapping to ensure consistent output
+    if not corpo.empty:
+        # Get the canonical column order from commercial_merged_mapping
+        canonical_order = list(commercial_merged_mapping.keys())
+        
+        # Get current columns that exist in the DataFrame
+        current_columns = list(corpo.columns)
+        
+        # Build the reordered column list: canonical columns first (in order), then any extras
+        ordered_columns = []
+        for col in canonical_order:
+            if col in current_columns:
+                ordered_columns.append(col)
+        
+        # Add any columns not in the mapping at the end (preserves extra columns)
+        for col in current_columns:
+            if col not in ordered_columns:
+                ordered_columns.append(col)
+        
+        corpo = corpo[ordered_columns]
+        logger.info(f"[CORPORATE MERGE] Reordered columns to canonical order")
     
     return corpo, matched_credit_ids
 
@@ -2511,7 +2868,7 @@ def remove_duplicates(df, columns_to_check=None):
         columns_to_check = [col for col in columns_to_check if col in df.columns]
         
         if not columns_to_check:
-            print("None of the specified columns found in DataFrame. Using all columns.")
+            logger.info("None of the specified columns found in DataFrame. Using all columns.")
             columns_to_check = df.columns.tolist()
     
     # Create a copy for case-insensitive comparison
@@ -2539,7 +2896,7 @@ def remove_duplicates(df, columns_to_check=None):
     # Log removed rows
     rows_removed = len(df) - len(df_cleaned)
     if rows_removed > 0:
-        print(f"Removed {rows_removed} duplicate rows")
+        logger.info(f"Removed {rows_removed} duplicate rows")
     
     return df_cleaned
 
@@ -2570,8 +2927,8 @@ def is_commercial_entity(name, commercial_keywords):
     
     # Debug print for analysis
     # if commercial_matches:
-    #     print(f"Potential commercial entity detected: {name}")
-    #     print(f"Matched standalone keywords: {commercial_matches}")
+    #     logger.info(f"Potential commercial entity detected: {name}")
+    #     logger.info(f"Matched standalone keywords: {commercial_matches}")
     
     return len(commercial_matches) > 0
 
@@ -2702,7 +3059,7 @@ def merge_dataframes(processed_sheets):
     """
     # Check if we have merged sheets
     if 'consumermerged' in processed_sheets or 'commercialmerged' in processed_sheets:
-        print("\n=== PROCESSING MERGED SHEETS ===")
+        logger.info("\n=== PROCESSING MERGED SHEETS ===")
         indi = processed_sheets.get('consumermerged', pd.DataFrame())
         corpo = processed_sheets.get('commercialmerged', pd.DataFrame())
     else:
@@ -2713,21 +3070,21 @@ def merge_dataframes(processed_sheets):
         indi = indi.applymap(lambda x: None if str(x).strip().lower() in ['none', 'nan', 'null', 'nill', 'nil'] else x)
         corpo = corpo.applymap(lambda x: None if str(x).strip().lower() in ['none', 'nan', 'null', 'nill', 'nil'] else x)
         
-        print("\n=== MERGED SHEET DATA (Before Split) ===")
-        print("Individual records:", len(indi))
-        print("Corporate records:", len(corpo))
+        logger.info("\n=== MERGED SHEET DATA (Before Split) ===")
+        logger.info("Individual records:", len(indi))
+        logger.info("Corporate records:", len(corpo))
 
         # --- Added Processing for Merged Sheets ---
         # Split commercial entities from the consumer_merged data
         if not indi.empty:
-            print("\nSplitting commercial entities from consumer_merged data...")
+            logger.info("\nSplitting commercial entities from consumer_merged data...")
             indi, corpo2 = split_commercial_entities(indi)
-            print(f"  - Individual records after split: {len(indi)}")
-            print(f"  - Commercial entities extracted: {len(corpo2)}")
+            logger.info(f"  - Individual records after split: {len(indi)}")
+            logger.info(f"  - Commercial entities extracted: {len(corpo2)}")
 
             # Rename and concatenate if commercial entities were found
             if not corpo2.empty:
-                print("\nRenaming columns for extracted commercial entities...")
+                logger.info("\nRenaming columns for extracted commercial entities...")
                 corpo2 = rename_columns(corpo2, ConsuToComm.copy())
                 
                 # Ensure both dataframes have reset indexes
@@ -2735,12 +3092,12 @@ def merge_dataframes(processed_sheets):
                     corpo = corpo.reset_index(drop=True)
                 corpo2 = corpo2.reset_index(drop=True)
                 
-                print("\nConcatenating extracted commercial entities with corporate data...")
+                logger.info("\nConcatenating extracted commercial entities with corporate data...")
                 try:
                     # If corpo is empty, just use corpo2
                     if corpo.empty:
                         corpo = corpo2
-                        print(f"  - Using extracted commercial entities as corporate data: {len(corpo)} rows")
+                        logger.info(f"  - Using extracted commercial entities as corporate data: {len(corpo)} rows")
                     else:
                         # Use columns parameter to ensure concatenation uses only columns from mapping
                         common_columns = [col for col in corpo2.columns if col in corpo.columns]
@@ -2749,26 +3106,26 @@ def merge_dataframes(processed_sheets):
                             corpo = pd.concat([corpo, corpo2], ignore_index=True, sort=False)
                         else:
                             corpo = pd.concat([corpo[common_columns], corpo2[common_columns]], ignore_index=True)
-                        print(f"  - Total corporate records after concatenation: {len(corpo)}")
+                        logger.info(f"  - Total corporate records after concatenation: {len(corpo)}")
                 except Exception as e:
-                    print(f"Error during commercial concatenation: {e}")
-                    print(f"corpo columns: {list(corpo.columns)}")
-                    print(f"corpo2 columns: {list(corpo2.columns)}")
+                    logger.info(f"Error during commercial concatenation: {e}")
+                    logger.info(f"corpo columns: {list(corpo.columns)}")
+                    logger.info(f"corpo2 columns: {list(corpo2.columns)}")
                     # If concatenation fails, at least ensure corpo2 is preserved
                     if corpo.empty:
                         corpo = corpo2.copy()
-                        print("Using only extracted commercial entities as corporate data")
+                        logger.info("Using only extracted commercial entities as corporate data")
         
         # Split consumer entities from the commercial_merged data
         if not corpo.empty:
-            print("\nSplitting consumer entities from commercial_merged data...")
+            logger.info("\nSplitting consumer entities from commercial_merged data...")
             corpo, indi2 = split_consumer_entities(corpo)
-            print(f"  - Corporate records after split: {len(corpo)}")
-            print(f"  - Consumer entities extracted: {len(indi2)}")
+            logger.info(f"  - Corporate records after split: {len(corpo)}")
+            logger.info(f"  - Consumer entities extracted: {len(indi2)}")
 
             # Rename and concatenate if consumer entities were found
             if not indi2.empty:
-                print("\nRenaming columns for extracted consumer entities...")
+                logger.info("\nRenaming columns for extracted consumer entities...")
                 # Apply the CommToConsu mapping to rename columns and strictly order them
                 indi2 = rename_columns(indi2, CommToConsu.copy())
                 
@@ -2776,12 +3133,12 @@ def merge_dataframes(processed_sheets):
                 indi = indi.reset_index(drop=True)
                 indi2 = indi2.reset_index(drop=True)
                 
-                print("\nConcatenating extracted consumer entities with individual data...")
+                logger.info("\nConcatenating extracted consumer entities with individual data...")
                 try:
                     # If indi is empty, just use indi2
                     if indi.empty:
                         indi = indi2
-                        print(f"  - Using extracted consumer entities as individual data: {len(indi)} rows")
+                        logger.info(f"  - Using extracted consumer entities as individual data: {len(indi)} rows")
                     else:
                         # Ensure both dataframes have the same column ordering by applying the same mapping
                         indi = rename_columns(indi, CommToConsu.copy())
@@ -2789,20 +3146,20 @@ def merge_dataframes(processed_sheets):
                         
                         # Direct concatenation without filtering to common columns
                         indi = pd.concat([indi, indi2], ignore_index=True, sort=False)
-                        print(f"Total individual borrowers after concatenation: {len(indi)}")
+                        logger.info(f"Total individual borrowers after concatenation: {len(indi)}")
                 except Exception as e:
-                    print(f"Error during consumer concatenation: {str(e)}")
-                    print(f"indi columns: {list(indi.columns)}")
-                    print(f"indi2 columns: {list(indi2.columns)}")
+                    logger.info(f"Error during consumer concatenation: {str(e)}")
+                    logger.info(f"indi columns: {list(indi.columns)}")
+                    logger.info(f"indi2 columns: {list(indi2.columns)}")
                     # If concatenation fails, at least ensure indi2 is preserved
                     if indi.empty:
                         indi = indi2.copy()
-                        print("Using only extracted consumer entities as individual data")
+                        logger.info("Using only extracted consumer entities as individual data")
         # --- End Added Processing ---
                 
-        print("\n=== FINAL MERGED SHEET DATA ===")
-        print("Final Individual records:", len(indi))
-        print("Final Corporate records:", len(corpo))
+        logger.info("\n=== FINAL MERGED SHEET DATA ===")
+        logger.info("Final Individual records:", len(indi))
+        logger.info("Final Corporate records:", len(corpo))
         
         return indi, corpo
 
@@ -2818,8 +3175,8 @@ def merge_dataframes(processed_sheets):
     corpo = merge_corporate_borrowers(comm, credit, prin)
 
     # Print merged corporate borrowers
-    print("\n=== MERGED CORPORATE BORROWERS ===")
-    print(corpo.head()) 
+    logger.info("\n=== MERGED CORPORATE BORROWERS ===")
+    logger.info(corpo.head()) 
 
     indi = indi.applymap(lambda x: None if str(x).strip().lower() in ['none', 'nan', 'null', 'nill', 'nil'] else x)
     corpo = corpo.applymap(lambda x: None if str(x).strip().lower() in ['none', 'nan', 'null', 'nill', 'nil'] else x)
@@ -2827,21 +3184,21 @@ def merge_dataframes(processed_sheets):
     #Step 3: Split commercial entities from individual borrowers
     indi, corpo2 = split_commercial_entities(indi)
 
-    print("\n=== SHEET DATA AFTER MERGING ===")
-    print("Number of rows:", len(indi))
-    print("First few rows:")
-    print(indi.head())
+    logger.info("\n=== SHEET DATA AFTER MERGING ===")
+    logger.info("Number of rows:", len(indi))
+    logger.info("First few rows:")
+    logger.info(indi.head())
 
-    print("Number of rows:", len(corpo))
-    print("First few rows:")
-    print(corpo.head())
-    print("Original corporate borrowers:", len(corpo))
-    print("Commercial entities to add:", len(corpo2))
+    logger.info("Number of rows:", len(corpo))
+    logger.info("First few rows:")
+    logger.info(corpo.head())
+    logger.info("Original corporate borrowers:", len(corpo))
+    logger.info("Commercial entities to add:", len(corpo2))
     
-    print("Number of rows:", len(corpo2))
-    print("First few rows:")
-    print(corpo2.head())
-    print("================================")
+    logger.info("Number of rows:", len(corpo2))
+    logger.info("First few rows:")
+    logger.info(corpo2.head())
+    logger.info("================================")
 
     # Step 4: Rename commercial entities before combining
     if not corpo2.empty:
@@ -2849,9 +3206,9 @@ def merge_dataframes(processed_sheets):
         corpo2 = rename_columns(corpo2, ConsuToComm.copy())
         
         # Debug statement to show corpo2 details before concatenation
-        print("Number of commercial entities:", len(corpo2))
-        print("First few rows of corpo2:")
-        print(corpo2.head())
+        logger.info("Number of commercial entities:", len(corpo2))
+        logger.info("First few rows of corpo2:")
+        logger.info(corpo2.head())
         
         # Ensure both dataframes have reset indexes
         corpo = corpo.reset_index(drop=True)
@@ -2862,22 +3219,22 @@ def merge_dataframes(processed_sheets):
             # If corpo is empty, just use corpo2
             if corpo.empty:
                 corpo = corpo2
-                print(f"Using extracted commercial entities as corporate data: {len(corpo)} rows")
+                logger.info(f"Using extracted commercial entities as corporate data: {len(corpo)} rows")
             else:
                 # Apply ConsuToComm mapping to ensure columns are aligned
                 corpo2 = rename_columns(corpo2, ConsuToComm.copy())
                 
                 # Direct concatenation without filtering to common columns
                 corpo = pd.concat([corpo, corpo2], ignore_index=True, sort=False)
-                print(f"Total corporate borrowers after concatenation: {len(corpo)}")
+                logger.info(f"Total corporate borrowers after concatenation: {len(corpo)}")
         except Exception as e:
-            print(f"Error during commercial concatenation: {e}")
-            print(f"corpo columns: {list(corpo.columns)}")
-            print(f"corpo2 columns: {list(corpo2.columns)}")
+            logger.info(f"Error during commercial concatenation: {e}")
+            logger.info(f"corpo columns: {list(corpo.columns)}")
+            logger.info(f"corpo2 columns: {list(corpo2.columns)}")
             # If concatenation fails, at least ensure corpo2 is preserved
             if corpo.empty:
                 corpo = corpo2.copy()
-                print("Using only extracted commercial entities as corporate data")
+                logger.info("Using only extracted commercial entities as corporate data")
 
         # Additional check to verify commercial entities were added
         commercial_entities_in_corpo = pd.DataFrame()
@@ -2887,31 +3244,31 @@ def merge_dataframes(processed_sheets):
                     lambda x: any(keyword in str(x).lower() for keyword in commercial_keywords)
                 )
             ]
-            print("\nCommercial Entities in Final Corporate Borrowers:")
-            print("Number of commercial entities:", len(commercial_entities_in_corpo))
-            print("First few commercial entities:")
-            print(commercial_entities_in_corpo.head())
+            logger.info("\nCommercial Entities in Final Corporate Borrowers:")
+            logger.info("Number of commercial entities:", len(commercial_entities_in_corpo))
+            logger.info("First few commercial entities:")
+            logger.info(commercial_entities_in_corpo.head())
         else:
-            print("\nWARNING: 'BUSINESSNAME' column not found in corporate DataFrame")
-            print("Cannot identify commercial entities in corporate borrowers")
+            logger.info("\nWARNING: 'BUSINESSNAME' column not found in corporate DataFrame")
+            logger.info("Cannot identify commercial entities in corporate borrowers")
     
     # Step 5: Split consumer entities from corporate borrowers
     corpo, indi2 = split_consumer_entities(corpo)
     
-    print("\n=== SPLIT CONSUMER ENTITIES ===")
-    print("Corporate records after split:", len(corpo))
-    print("Consumer entities extracted:", len(indi2))
+    logger.info("\n=== SPLIT CONSUMER ENTITIES ===")
+    logger.info("Corporate records after split:", len(corpo))
+    logger.info("Consumer entities extracted:", len(indi2))
     
     # Step 6: Rename consumer entities before combining
     if not indi2.empty:
         # Rename indi2 columns to match individual borrower template
-        print("\nRenaming columns for extracted consumer entities...")
+        logger.info("\nRenaming columns for extracted consumer entities...")
         indi2 = rename_columns(indi2, CommToConsu.copy())
         
         # Debug statement to show indi2 details before concatenation
-        print("Number of consumer entities:", len(indi2))
-        print("First few rows of indi2:")
-        print(indi2.head())
+        logger.info("Number of consumer entities:", len(indi2))
+        logger.info("First few rows of indi2:")
+        logger.info(indi2.head())
         
         # Ensure both dataframes have reset indexes
         indi = indi.reset_index(drop=True)
@@ -2922,7 +3279,7 @@ def merge_dataframes(processed_sheets):
             # If indi is empty, just use indi2
             if indi.empty:
                 indi = indi2
-                print(f"Using extracted consumer entities as individual data: {len(indi)} rows")
+                logger.info(f"Using extracted consumer entities as individual data: {len(indi)} rows")
             else:
                 # Ensure indi has the same column ordering as CommToConsu
                 indi = rename_columns(indi, CommToConsu.copy())
@@ -2930,22 +3287,22 @@ def merge_dataframes(processed_sheets):
                 # Now both dataframes have exactly the same columns in the same order,
                 # we can safely concatenate them
                 indi = pd.concat([indi, indi2], ignore_index=True)
-                print(f"Total individual records after concatenation: {len(indi)}")
+                logger.info(f"Total individual records after concatenation: {len(indi)}")
                     
             # Debug statement to confirm addition
-            print("\nAfter Adding Consumer Entities:")
-            print("Total individual borrowers:", len(indi))
-            print("Columns in final indi:", list(indi.columns[:10]) + ["..."])  # Show first 10 columns
-            print("First few rows after addition:")
-            print(indi.head())
+            logger.info("\nAfter Adding Consumer Entities:")
+            logger.info("Total individual borrowers:", len(indi))
+            logger.info("Columns in final indi:", list(indi.columns[:10]) + ["..."])  # Show first 10 columns
+            logger.info("First few rows after addition:")
+            logger.info(indi.head())
         except Exception as e:
-            print(f"Error during consumer concatenation: {str(e)}")
-            print(f"indi columns: {list(indi.columns)}")
-            print(f"indi2 columns: {list(indi2.columns)}")
+            logger.info(f"Error during consumer concatenation: {str(e)}")
+            logger.info(f"indi columns: {list(indi.columns)}")
+            logger.info(f"indi2 columns: {list(indi2.columns)}")
             # If concatenation fails, at least ensure indi2 is preserved
             if indi.empty:
                 indi = indi2.copy()
-                print("Using only extracted consumer entities as individual data")
+                logger.info("Using only extracted consumer entities as individual data")
     
     return indi, corpo
  
@@ -2969,12 +3326,12 @@ def rename_columns(df, column_mapping):
             for mapped_column, alt_names in column_mapping.items():
                 if column in alt_names or column.lower() in alt_names or column.upper() in alt_names:
                     df.rename(columns={column: mapped_column}, inplace=True)
-                    print(f"Renamed {column} to {mapped_column}")
+                    logger.info(f"Renamed {column} to {mapped_column}")
                     break
 
         # Check for duplicate columns and make them unique
         if len(df.columns) != len(set(df.columns)):
-            print("WARNING: Duplicate column names detected, making them unique...")
+            logger.info("WARNING: Duplicate column names detected, making them unique...")
             # Create a new columns list without duplicates
             seen = set()
             new_columns = []
@@ -2994,7 +3351,7 @@ def rename_columns(df, column_mapping):
             df.columns = new_columns
         
         # Print columns before final reordering
-        print("Columns before reordering:", list(df.columns))
+        logger.info("Columns before reordering:", list(df.columns))
 
         # Create ordered DataFrame using concat instead of adding columns one by one
         # This avoids DataFrame fragmentation warning
@@ -3018,12 +3375,12 @@ def rename_columns(df, column_mapping):
         ordered_df = ordered_df.reset_index(drop=True)
         
         # Print final columns
-        print("Final columns after strict reordering:", list(ordered_df.columns))
-        print(f"Final dataframe has {len(ordered_df.columns)} columns and {len(ordered_df)} rows")
+        logger.info("Final columns after strict reordering:", list(ordered_df.columns))
+        logger.info(f"Final dataframe has {len(ordered_df.columns)} columns and {len(ordered_df)} rows")
 
         return ordered_df
     except Exception as e:
-        print(f"Error in rename_columns: {e}")
+        logger.info(f"Error in rename_columns: {e}")
         traceback.print_exc()
         return df
 
@@ -3062,9 +3419,9 @@ def trim_strings_to_59(df):
         return s
     
     # Apply the function to all elements in the DataFrame
-    print("\n=== TRIMMING STRING VALUES TO 59 CHARACTERS ===")
-    df = df.applymap(trim_string)
-    print("String trimming completed")
+    logger.info("\n=== TRIMMING STRING VALUES TO 59 CHARACTERS ===")
+    df = df.map(trim_string)  # Updated from applymap (deprecated)
+    logger.info("String trimming completed")
     
     return df
 
@@ -3122,84 +3479,145 @@ def save_excel_as_text(df, filename):
         # Close and save the file
         writer.close()
         
-        print(f"✓ Saved Excel file with Text formatting: {filename}")
+        logger.info(f"✓ Saved Excel file with Text formatting: {filename}")
         
     except Exception as e:
-        print(f"Error saving Excel with text format: {str(e)}")
+        logger.info(f"Error saving Excel with text format: {str(e)}")
         # Fallback to regular save if text formatting fails
-        print(f"Falling back to standard Excel save...")
+        logger.info(f"Falling back to standard Excel save...")
         df.to_excel(filename, index=False)
 
 
+def _apply_rate_limit(view_func):
+    """
+    Apply rate limiting decorator if django-ratelimit is available.
+    Rate limits: 3 uploads per minute, 10 uploads per hour for regular users.
+    """
+    if RATELIMIT_AVAILABLE:
+        # Apply multiple rate limits
+        view_func = ratelimit(key='user', rate='3/m', method='POST', block=False)(view_func)
+        view_func = ratelimit(key='user', rate='10/h', method='POST', block=False)(view_func)
+    return view_func
+
+
 @login_required
+@_apply_rate_limit
 def upload_file(request):
+    # Check if rate limited
+    if getattr(request, 'limited', False):
+        logger.warning(f"[RATE LIMIT] User {request.user.username} exceeded upload rate limit")
+        messages.error(
+            request,
+            'Upload rate limit exceeded. You can upload up to 3 files per minute or 10 files per hour. '
+            'Please wait a few minutes before trying again.'
+        )
+        return redirect('auto:upload')
+    
     if request.method == 'POST':
         form = ExcelUploadForm(request.POST, request.FILES)
         if form.is_valid():
-            uploaded_file = request.FILES['file']
-            original_filename = os.path.splitext(uploaded_file.name)[0]
+            # Get list of uploaded files (form now returns a list)
+            uploaded_files = form.cleaned_data['file']
+            if not isinstance(uploaded_files, list):
+                uploaded_files = [uploaded_files]
+            
+            # For display/tracking, combine all filenames
+            original_filenames = [os.path.splitext(f.name)[0] for f in uploaded_files]
+            combined_filename = ', '.join([f.name for f in uploaded_files])
+            total_size = sum(f.size for f in uploaded_files)
             
             # Capture user-selected reporting period
             selected_month = int(form.cleaned_data['month'])
             selected_year = int(form.cleaned_data['year'])
             
-            # Get subscriber information from user's permanent binding
+            # Get subscriber information based on user type
             from acctmgt.models import UserProfile
-            from .models import UploadSession
+            from .models import UploadSession, Subscriber
             import time
             import calendar
             
-            user_profile = UserProfile.get_or_create_profile(request.user)
+            # Check if user is in multi_subscriber group
+            is_multi_subscriber = request.user.groups.filter(name='multi_subscriber').exists()
             
-            # Ensure user is bound to a subscriber
-            if not user_profile.is_bound:
-                messages.error(request, 'Your account is not bound to any organization. Please complete the binding process.')
-                return redirect('acctmgt:subscriber_selection')
+            if is_multi_subscriber:
+                # Multi-subscriber user: get subscriber from form dropdown
+                selected_subscriber_id = form.cleaned_data.get('subscriber_id')
+                if not selected_subscriber_id:
+                    messages.error(request, 'Please select a subscriber from the dropdown.')
+                    return redirect('auto:upload')
+                
+                try:
+                    bound_subscriber = Subscriber.objects.get(subscriber_id=selected_subscriber_id)
+                    subscriber_id = bound_subscriber.subscriber_id
+                    subscriber_name = bound_subscriber.subscriber_name
+                    logger.info(f"[UPLOAD] Multi-subscriber user {request.user.username} uploading for subscriber: {subscriber_name} (ID: {subscriber_id})")
+                except Subscriber.DoesNotExist:
+                    messages.error(request, 'Selected subscriber not found.')
+                    return redirect('auto:upload')
+            else:
+                # Regular user: get subscriber from user's permanent binding
+                user_profile = UserProfile.get_or_create_profile(request.user)
+                
+                # Ensure user is bound to a subscriber
+                if not user_profile.is_bound:
+                    messages.error(request, 'Your account is not bound to any organization. Please complete the binding process.')
+                    return redirect('acctmgt:subscriber_selection')
+                
+                # Get bound subscriber information
+                bound_subscriber = user_profile.get_bound_subscriber()
+                if not bound_subscriber:
+                    messages.error(request, 'Unable to retrieve your organization information. Please contact support.')
+                    return redirect('acctmgt:subscriber_selection')
+                
+                subscriber_id = bound_subscriber.subscriber_id
+                subscriber_name = bound_subscriber.subscriber_name
             
-            # Get bound subscriber information
-            bound_subscriber = user_profile.get_bound_subscriber()
-            if not bound_subscriber:
-                messages.error(request, 'Unable to retrieve your organization information. Please contact support.')
-                return redirect('acctmgt:subscriber_selection')
-            
-            subscriber_id = bound_subscriber.subscriber_id
-            subscriber_name = bound_subscriber.subscriber_name
-            
-            # Save original file for archival purposes before any processing
+            # Save original files for archival purposes before any processing
             upload_timestamp = timezone.now()
-            original_save_success, original_file_path, original_error = save_original_file(
-                uploaded_file, 
-                subscriber_id, 
-                upload_timestamp
-            )
-            
-            if not original_save_success:
-                messages.error(request, f'Failed to archive original file: {original_error}')
-                return redirect('auto:upload_file')
-            
-            # Reset file pointer for processing
-            uploaded_file.seek(0)
+            original_file_paths = []
+            file_paths = []
             
             fs = FileSystemStorage()
-            filename = fs.save(uploaded_file.name, uploaded_file)
-            file_path = os.path.join(settings.MEDIA_ROOT, filename)
             
-            # Create UploadSession to track this upload
+            for uploaded_file in uploaded_files:
+                # Save original file for archival
+                original_save_success, original_file_path, original_error = save_original_file(
+                    uploaded_file, 
+                    subscriber_id, 
+                    upload_timestamp
+                )
+                
+                if not original_save_success:
+                    messages.error(request, f'Failed to archive original file {uploaded_file.name}: {original_error}')
+                    return redirect('auto:upload_file')
+                
+                original_file_paths.append(original_file_path)
+                
+                # Reset file pointer for processing
+                uploaded_file.seek(0)
+                
+                # Save file for processing
+                filename = fs.save(uploaded_file.name, uploaded_file)
+                file_path = os.path.join(settings.MEDIA_ROOT, filename)
+                file_paths.append(file_path)
+            
+            # Create UploadSession to track this upload (use first file as primary, note all in filename)
             upload_session = UploadSession.objects.create(
                 user=request.user,
                 subscriber_id=subscriber_id,
-                filename=filename,
-                original_filename=uploaded_file.name,
-                file_size=uploaded_file.size,
+                filename=combined_filename,
+                original_filename=combined_filename,
+                file_size=total_size,
                 status='uploading',
-                original_file_path=original_file_path,  # Store the path to the original file
-                reporting_month=selected_month,  # Store user-selected month
-                reporting_year=selected_year     # Store user-selected year
+                original_file_path=','.join(original_file_paths),  # Store all paths
+                reporting_month=selected_month,
+                reporting_year=selected_year
             )
             
             # Show confirmation message with selected reporting period
             month_name = calendar.month_name[selected_month]
-            messages.info(request, f'Processing file for reporting period: {month_name} {selected_year}')
+            file_count_msg = f"Processing {len(uploaded_files)} file(s)" if len(uploaded_files) > 1 else "Processing file"
+            messages.info(request, f'{file_count_msg} for reporting period: {month_name} {selected_year}')
             
             # Queue async processing task
             try:
@@ -3209,8 +3627,8 @@ def upload_file(request):
                 task_id = async_task(
                     process_uploaded_file,
                     upload_session.id,
-                    file_path,
-                    uploaded_file.name,
+                    file_paths,  # Pass list of file paths
+                    [f.name for f in uploaded_files],  # Pass list of original filenames
                     subscriber_id,
                     subscriber_name,
                     request.user.id,
@@ -3219,15 +3637,16 @@ def upload_file(request):
                     task_name=f'process_file_{upload_session.id}'
                 )
                 
-                upload_session.update_progress('upload_validation', 2, f'File uploaded, queued for processing (Task ID: {task_id})...')
+                upload_session.update_progress('upload_validation', 2, f'File(s) uploaded, queued for processing (Task ID: {task_id})...')
                 
-                print(f"[UPLOAD] ✓ Queued async task {task_id} for UploadSession {upload_session.id}")
-                print(f"[UPLOAD] ℹ Reporting Period: {month_name} {selected_year}")
-                print(f"[UPLOAD] ⚠ IMPORTANT: Make sure Q cluster worker is running!")
-                print(f"[UPLOAD] → Run in separate terminal: python manage.py qcluster")
+                logger.info(f"[UPLOAD] ✓ Queued async task {task_id} for UploadSession {upload_session.id}")
+                logger.info(f"[UPLOAD] ℹ Files: {[f.name for f in uploaded_files]}")
+                logger.info(f"[UPLOAD] ℹ Reporting Period: {month_name} {selected_year}")
+                logger.info(f"[UPLOAD] ⚠ IMPORTANT: Make sure Q cluster worker is running!")
+                logger.info(f"[UPLOAD] → Run in separate terminal: python manage.py qcluster")
                 
             except Exception as e:
-                print(f"[UPLOAD] ✗ Failed to queue async task: {e}")
+                logger.info(f"[UPLOAD] ✗ Failed to queue async task: {e}")
                 upload_session.update_progress('upload_validation', 2, f'File uploaded (sync fallback - worker not available)')
             
             # Immediately redirect to progress tracking page
@@ -3240,15 +3659,24 @@ def upload_file(request):
     context = {'form': form}
     if request.user.is_authenticated:
         from acctmgt.models import UserProfile
-        from .models import UploadSession
+        from .models import UploadSession, Subscriber
         
-        user_profile = UserProfile.get_or_create_profile(request.user)
-        if user_profile.is_bound:
-            bound_subscriber = user_profile.get_bound_subscriber()
-            if bound_subscriber:
-                context['bound_subscriber'] = bound_subscriber
-                context['subscriber_name'] = bound_subscriber.subscriber_name
-                context['subscriber_id'] = bound_subscriber.subscriber_id
+        # Check if user is in multi_subscriber group
+        is_multi_subscriber = request.user.groups.filter(name='multi_subscriber').exists()
+        context['is_multi_subscriber'] = is_multi_subscriber
+        
+        if is_multi_subscriber:
+            # Provide list of all subscribers for dropdown
+            context['subscribers'] = Subscriber.objects.all().order_by('subscriber_name')
+        else:
+            # Regular user: show bound subscriber info
+            user_profile = UserProfile.get_or_create_profile(request.user)
+            if user_profile.is_bound:
+                bound_subscriber = user_profile.get_bound_subscriber()
+                if bound_subscriber:
+                    context['bound_subscriber'] = bound_subscriber
+                    context['subscriber_name'] = bound_subscriber.subscriber_name
+                    context['subscriber_id'] = bound_subscriber.subscriber_id
         
         # Always check for last completed upload session
         last_upload = UploadSession.objects.filter(
@@ -3262,12 +3690,22 @@ def upload_file(request):
         
         # If viewing results, load the data from the last completed upload session
         if context['current_view'] == 'results' and last_upload:
+            # Debug logging to track download links issue
+            logger.info(f"[RESULTS VIEW] Loading results for multi_subscriber={is_multi_subscriber}")
+            logger.info(f"[RESULTS VIEW] upload_session.id={last_upload.id}, individual_file_path={last_upload.individual_file_path}, corporate_file_path={last_upload.corporate_file_path}")
+            
+            # Force refresh from database to ensure we have the latest file paths
+            # (fixes issue where async task updates DB but cached object has stale data)
+            last_upload.refresh_from_db()
+            logger.info(f"[RESULTS VIEW] After refresh: individual_file_path={last_upload.individual_file_path}, corporate_file_path={last_upload.corporate_file_path}")
+            
             # Load processing data from the upload session
             if last_upload.processing_data:
                 try:
                     processing_data = json.loads(last_upload.processing_data)
                     context['processing_stats'] = processing_data.get('processing_stats', [])
                     context['success_message'] = True
+
                     context['upload_session'] = last_upload
                     
                     # Calculate totals from the stored DataFrames
@@ -3289,23 +3727,39 @@ def upload_file(request):
                     # Credit unmerged data
                     context['total_credit_unmerged_count'] = last_upload.unmatched_credit_records or 0
                     
+                    # Excluded records data
+                    context['excluded_individual'] = last_upload.excluded_individual_records or 0
+                    context['excluded_corporate'] = last_upload.excluded_corporate_records or 0
+                    
                 except Exception as e:
-                    print(f"[UPLOAD] Error loading results data: {e}")
+                    logger.info(f"[UPLOAD] Error loading results data: {e}")
                     # Fallback to basic metrics from UploadSession
                     context['total_individual'] = last_upload.individual_records
                     context['total_corporate'] = last_upload.corporate_records
                     context['total_credit_unmerged_count'] = last_upload.unmatched_credit_records or 0
+                    context['excluded_individual'] = last_upload.excluded_individual_records or 0
+                    context['excluded_corporate'] = last_upload.excluded_corporate_records or 0
                     context['success_message'] = True
                     context['upload_session'] = last_upload
     
     return render(request, 'upload.html', context)
 
 def clean_for_output(df):
+    # Canonical null values (all lowercase) - single source of truth
+    NULL_VALUES = {
+        'n/a', 'n.a', 'n.a.', 'none', 'nan', 'null', '#n/a', 
+        'nil', 'nill', 'na', 'unknown', 'blank', 'missing',
+        'not available', 'not applicable', '-', '--', '---', '?'
+    }
+    
     # Convert all columns to string
     for col in df.columns:
         df[col] = df[col].astype(str)
-    # Replace all null/nan/nil/none with empty string
-    df.replace(['N/A', 'N.A', 'None', 'NaN', 'nan', 'null', 'n/a', '#N/A', 'NIL', 'Nill', 'nil', 'none', 'None'], '', inplace=True)
+    
+    # Case-insensitive null value cleaning
+    df = df.apply(lambda col: col.apply(
+        lambda x: '' if str(x).strip().lower() in NULL_VALUES else x
+    ))
     return df
 
 def enforce_string_columns(df):
@@ -3492,10 +3946,10 @@ def verify_split_decision(request):
                 if using_parquet:
                     # New flow: Only store verification candidates and metadata in session
                     # Full DataFrames will be loaded from Parquet when needed
-                    print(f"[VERIFICATION] Loading session data (Parquet mode) for upload session {session_id}")
+                    logger.info(f"[[VERIFICATION] Loading session data (Parquet mode) for upload session {session_id}")
                 else:
                     # Legacy flow: Load from JSON (for backward compatibility with old uploads)
-                    print(f"[VERIFICATION] Loading session data (JSON mode - legacy) for upload session {session_id}")
+                    logger.info(f"[[VERIFICATION] Loading session data (JSON mode - legacy) for upload session {session_id}")
                     request.session['split_indi'] = processing_data.get('split_indi')
                     request.session['split_corpo'] = processing_data.get('split_corpo')
                     request.session['indi'] = processing_data.get('split_indi')
@@ -3553,7 +4007,7 @@ def verify_split_decision(request):
     if request.method == 'POST':
         try:
             # Validate required session keys exist
-            required_session_keys = ['split_candidates_commercial', 'split_candidates_consumer']
+            required_session_keys = ['upload_session_id']
             missing_keys = [key for key in required_session_keys if key not in request.session]
             
             if missing_keys:
@@ -3565,217 +4019,45 @@ def verify_split_decision(request):
             consumer_moves = json.loads(request.POST.get('consumer_moves', '[]'))
             
             # Debug logging
-            print(f"Commercial moves count: {len(commercial_moves)}")
-            print(f"Consumer moves count: {len(consumer_moves)}")
+            logger.info(f"[VERIFICATION] Commercial moves count: {len(commercial_moves)}")
+            logger.info(f"[VERIFICATION] Consumer moves count: {len(consumer_moves)}")
             
-            # Load upload session to get session ID for Parquet files
+            # Load upload session
             upload_session_id = request.session.get('upload_session_id')
             if not upload_session_id:
                 messages.error(request, 'Session expired. Please upload the file again.')
                 return redirect('auto:upload')
             
-            # Check if using Parquet storage
-            using_parquet = request.session.get('using_parquet', True)  # Default to True for new uploads
+            # Get the upload session
+            from .models import UploadSession as UploadSessionModel
+            upload_session = UploadSessionModel.objects.get(id=upload_session_id, user=request.user)
             
-            # Retrieve stored verification candidates from session (lightweight)
-            split_candidates_commercial = pd.read_json(request.session['split_candidates_commercial'], orient='split', dtype=str)
-            split_candidates_commercial = enforce_string_columns(split_candidates_commercial)
-            split_candidates_consumer = pd.read_json(request.session['split_candidates_consumer'], orient='split', dtype=str)
-            split_candidates_consumer = enforce_string_columns(split_candidates_consumer)
+            # Store verification decisions in processing_data for async processing
+            processing_data = json.loads(upload_session.processing_data or '{}')
+            processing_data['commercial_moves'] = commercial_moves
+            processing_data['consumer_moves'] = consumer_moves
+            processing_data['verification_submitted'] = True
+            upload_session.processing_data = json.dumps(processing_data)
             
-            # Debug logging for DataFrame sizes
-            print(f"Commercial candidates DataFrame size: {len(split_candidates_commercial)}")
-            print(f"Consumer candidates DataFrame size: {len(split_candidates_consumer)}")
+            # CRITICAL: Save processing_data BEFORE mark_verification_completed()
+            # mark_verification_completed() uses save(update_fields=[...]) which doesn't include processing_data
+            # Without this, the async task loads OLD data without verification decisions!
+            upload_session.save(update_fields=['processing_data'])
             
-            # Load full split DataFrames - from Parquet or JSON based on flag
-            if using_parquet:
-                # New flow: Load from Parquet (memory efficient)
-                from .tasks import load_from_parquet
-                print(f"[VERIFICATION] Loading split DataFrames from Parquet for session {upload_session_id}")
-                indi = load_from_parquet(upload_session_id, 'split_individual')
-                indi = enforce_string_columns(indi)
-                corpo = load_from_parquet(upload_session_id, 'split_corporate')
-                corpo = enforce_string_columns(corpo)
-                print(f"[VERIFICATION] Loaded indi: {len(indi)} rows, corpo: {len(corpo)} rows")
-            else:
-                # Legacy flow: Load from JSON session
-                print(f"[VERIFICATION] Loading split DataFrames from JSON session (legacy mode)")
-                indi = pd.read_json(request.session['indi'], orient='split', dtype=str)
-                indi = enforce_string_columns(indi)
-                corpo = pd.read_json(request.session['corpo'], orient='split', dtype=str)
-                corpo = enforce_string_columns(corpo)
+            # Mark verification as completed (status transition)
+            upload_session.mark_verification_completed()
+            
+            logger.info(f"[VERIFICATION] Stored verification decisions for session {upload_session_id}")
+            logger.info(f"[VERIFICATION] Queuing async post-verification processing")
+            
+            # Queue async task for post-verification processing (all heavy work happens here)
+            from django_q.tasks import async_task
             
             processing_stats = request.session.get('processing_stats', [])
             original_filename = request.session.get('original_filename', 'output')
             subscriber_id = request.session.get('subscriber_id')
             subscriber_name = request.session.get('subscriber_name')
-            # Retrieve credit unmerged records data
-            individual_credit_unmerged = request.session.get('individual_credit_unmerged', {'unmerged_count': 0, 'total_valid_credit': 0, 'matched_count': 0})
-            corporate_credit_unmerged = request.session.get('corporate_credit_unmerged', {'unmerged_count': 0, 'total_valid_credit': 0, 'matched_count': 0})
             
-            # Ensure subscriber information is available
-            if not subscriber_id or not subscriber_name:
-                messages.error(request, 'Subscriber information not found. Please upload the file again.')
-                return redirect('auto:upload')
-            
-            # Extract date from filename for standardized naming
-            extracted_month, extracted_year = extract_date_from_filename(original_filename)
-
-            # For commercial candidates: checked = move to corpo, unchecked = stay in indi
-            move_to_corp_idx = [i for i, move in enumerate(commercial_moves) if move]
-            stay_in_indi_idx = [i for i, move in enumerate(commercial_moves) if not move]
-            
-            # Validate indices are within bounds for commercial candidates
-            if len(split_candidates_commercial) > 0:
-                commercial_max_idx = len(split_candidates_commercial) - 1
-                move_to_corp_idx = [i for i in move_to_corp_idx if i <= commercial_max_idx]
-                stay_in_indi_idx = [i for i in stay_in_indi_idx if i <= commercial_max_idx]
-            else:
-                move_to_corp_idx = []
-                stay_in_indi_idx = []
-
-            # Separate checked vs unchecked commercial candidates
-            checked_commercial = split_candidates_commercial.iloc[move_to_corp_idx].copy() if move_to_corp_idx else pd.DataFrame()
-            unchecked_commercial = split_candidates_commercial.iloc[stay_in_indi_idx].copy() if stay_in_indi_idx else pd.DataFrame()
-
-            # For consumer candidates: checked = move to indi, unchecked = stay in corpo
-            move_to_indi_idx = [i for i, move in enumerate(consumer_moves) if move]
-            stay_in_corp_idx = [i for i, move in enumerate(consumer_moves) if not move]
-            
-            # Validate indices are within bounds for consumer candidates
-            if len(split_candidates_consumer) > 0:
-                consumer_max_idx = len(split_candidates_consumer) - 1
-                move_to_indi_idx = [i for i in move_to_indi_idx if i <= consumer_max_idx]
-                stay_in_corp_idx = [i for i in stay_in_corp_idx if i <= consumer_max_idx]
-            else:
-                move_to_indi_idx = []
-                stay_in_corp_idx = []
-
-            # Debug logging after bounds checking
-            print(f"Final move_to_corp_idx: {move_to_corp_idx}")
-            print(f"Final stay_in_indi_idx: {stay_in_indi_idx}")
-            print(f"Final move_to_indi_idx: {move_to_indi_idx}")
-            print(f"Final stay_in_corp_idx: {stay_in_corp_idx}")
-            
-            # Separate checked vs unchecked consumer candidates
-            checked_consumer = split_candidates_consumer.iloc[move_to_indi_idx].copy() if move_to_indi_idx else pd.DataFrame()
-            unchecked_consumer = split_candidates_consumer.iloc[stay_in_corp_idx].copy() if stay_in_corp_idx else pd.DataFrame()
-
-            # Return unchecked records to original DataFrames (no processing)
-            if not unchecked_commercial.empty:
-                # Restore original individual name structure for unchecked commercial candidates
-                if 'ORIGINAL_BUSINESSNAME' in unchecked_commercial.columns:
-                    # Split the original business name back into individual components
-                    for idx, row in unchecked_commercial.iterrows():
-                        if pd.notna(row['ORIGINAL_BUSINESSNAME']):
-                            # Apply remove_titles function before splitting to clean titles
-                            cleaned_business_name = remove_titles(str(row['ORIGINAL_BUSINESSNAME']))
-                            name_parts = cleaned_business_name.split(maxsplit=2)
-                            unchecked_commercial.at[idx, 'SURNAME'] = name_parts[0] if len(name_parts) > 0 else ''
-                            unchecked_commercial.at[idx, 'FIRSTNAME'] = name_parts[1] if len(name_parts) > 1 else ''
-                            unchecked_commercial.at[idx, 'MIDDLENAME'] = name_parts[2] if len(name_parts) > 2 else ''
-                    # Remove the temporary ORIGINAL_BUSINESSNAME column
-                    unchecked_commercial = unchecked_commercial.drop(columns=['ORIGINAL_BUSINESSNAME'], errors='ignore')
-                indi = pd.concat([indi, unchecked_commercial], ignore_index=True)
-            
-            if not unchecked_consumer.empty:
-                # Restore original business name and clean up individual columns for unchecked consumer records
-                if 'ORIGINAL_BUSINESSNAME' in unchecked_consumer.columns:
-                    unchecked_consumer['BUSINESSNAME'] = unchecked_consumer['ORIGINAL_BUSINESSNAME']
-                    columns_to_drop = ['ORIGINAL_BUSINESSNAME', 'SURNAME', 'FIRSTNAME', 'MIDDLENAME', 'DEPENDANTS']
-                    unchecked_consumer = unchecked_consumer.drop(columns=[col for col in columns_to_drop if col in unchecked_consumer.columns], errors='ignore')
-                corpo = pd.concat([corpo, unchecked_consumer], ignore_index=True)
-
-
-            # When moving an individual to commercial:
-            confirmed_commercial = transform_to_commercial(
-                checked_commercial, 
-                columns_to_clear=guarantor_columns_to_clear
-            )
-
-            # When moving a corporate to consumer:
-            confirmed_consumer = transform_to_consumer(
-                checked_consumer, 
-                columns_to_clear=principal_officer_columns_to_clear
-            )
-# Transform ONLY checked records
-            confirmed_commercial = pd.DataFrame()
-            confirmed_consumer = pd.DataFrame()
-            
-            if not checked_commercial.empty:
-                # When moving an individual to commercial:
-                confirmed_commercial = transform_to_commercial(
-                    checked_commercial, 
-                    columns_to_clear=guarantor_columns_to_clear
-                )
-                
-            if not checked_consumer.empty:
-                # When moving a corporate to consumer:
-                confirmed_consumer = transform_to_consumer(
-                    checked_consumer, 
-                    columns_to_clear=principal_officer_columns_to_clear
-                )
-                
-            # Concatenate only the transformed checked records
-            if not confirmed_consumer.empty:
-                indi = pd.concat([indi, confirmed_consumer], ignore_index=True)
-            if not confirmed_commercial.empty:
-                corpo = pd.concat([corpo, confirmed_commercial], ignore_index=True)
-
-            # All further processing should NOT change dtypes, but just in case:
-            indi = modify_middle_names(indi)
-            corpo = modify_middle_names(corpo)
-
-            indi = clean_for_output(indi)
-            corpo = clean_for_output(corpo)
-            # Drop name and dependant columns from corpo again to be sure
-            columns_to_remove = ['SURNAME', 'FIRSTNAME', 'MIDDLENAME', 'DEPENDANTS']
-            corpo = corpo.drop(columns=[col for col in columns_to_remove if col in corpo.columns], errors='ignore')
-
-            indi = remove_duplicates(indi)
-            corpo = remove_duplicates(corpo)
-
-            total_individual_records = len(indi) if not indi.empty else 0
-            total_corporate_records = len(corpo) if not corpo.empty else 0
-
-            # Calculate unmerged credit records using the same logic as PDF report
-            total_credit_unmerged = 0
-            processing_stats = request.session.get('processing_stats', [])
-            
-            # Get total credit records from processing stats - EXCLUDE guarantor information
-            total_credit_records = 0
-            for stat in processing_stats:
-                sheet_name = stat.get('sheet_name', '').lower()
-                valid_records = stat.get('valid_records', 0)
-                # Only count actual credit information, exclude guarantor information
-                if ('credit' in sheet_name and 'information' in sheet_name and 'guarantor' not in sheet_name):
-                    total_credit_records += valid_records
-            
-            # Get upload_session_id for async task
-            upload_session_id = request.session.get('upload_session_id')
-            if not upload_session_id:
-                messages.error(request, 'Upload session not found. Please try uploading again.')
-                return redirect('auto:upload')
-            
-            # Save updated DataFrames back to appropriate storage
-            using_parquet = request.session.get('using_parquet', True)
-            
-            if using_parquet:
-                # Save to Parquet (after user verification decisions applied)
-                from .tasks import save_to_parquet
-                print(f"[VERIFICATION] Saving verified DataFrames to Parquet for session {upload_session_id}")
-                save_to_parquet(indi, upload_session_id, 'split_individual')
-                save_to_parquet(corpo, upload_session_id, 'split_corporate')
-            else:
-                # Legacy: Would save to session (not recommended due to size)
-                print(f"[VERIFICATION] Using legacy JSON mode - DataFrames already in memory")
-            
-            # Queue async task for post-verification processing
-            from django_q.tasks import async_task
-            
-            print(f"[VERIFICATION] Queuing post-verification processing for session {upload_session_id}")
-            
-            # New signature: use Parquet files instead of passing large JSON DataFrames
             task_id = async_task(
                 'auto.tasks.process_post_verification',
                 upload_session_id,
@@ -3784,12 +4066,11 @@ def verify_split_decision(request):
                 original_filename,
                 subscriber_id,
                 subscriber_name,
-                total_individual_records,
-                total_corporate_records
+                0,  # total_individual_records - calculated in task
+                0   # total_corporate_records - calculated in task
             )
             
-            print(f"[VERIFICATION] Post-verification task queued with ID: {task_id}")
-            print(f"[VERIFICATION] Using Parquet files for memory-efficient processing")
+            logger.info(f"[VERIFICATION] Post-verification task queued with ID: {task_id}")
             
             # Clean up session verification data
             request.session.pop('commercial_candidates', None)
@@ -3803,13 +4084,15 @@ def verify_split_decision(request):
             request.session.pop('corporate_credit_merged', None)
             request.session.pop('individual_credit_unmerged', None)
             request.session.pop('corporate_credit_unmerged', None)
+            request.session.pop('split_candidates_commercial', None)
+            request.session.pop('split_candidates_consumer', None)
             
-            # Redirect to progress tracking page
+            # Redirect to progress tracking page immediately
             return redirect('auto:progress_tracking', session_id=upload_session_id)
         except Exception as e:
             # Log the full error for debugging
-            print("An error occurred in verify_split_decision:")
-            print(traceback.format_exc())
+            logger.info("An error occurred in verify_split_decision:")
+            logger.info(traceback.format_exc())
             
             # Show error message and redirect to upload page
             messages.error(request, 'An error occurred during verification. Please try uploading the file again.')
@@ -3846,14 +4129,22 @@ def dashboard(request):
     # Get user profile and subscriber information
     user_profile = UserProfile.get_or_create_profile(request.user)
     
-    if not user_profile.is_bound:
-        messages.error(request, 'Your account is not bound to any organization. Please complete the binding process.')
-        return redirect('acctmgt:subscriber_selection')
+    # Check if user is multi-subscriber (they don't need binding)
+    is_multi_subscriber = request.user.groups.filter(name='multi_subscriber').exists()
     
-    bound_subscriber = user_profile.get_bound_subscriber()
-    if not bound_subscriber:
-        messages.error(request, 'Unable to retrieve your organization information. Please contact support.')
-        return redirect('acctmgt:subscriber_selection')
+    if is_multi_subscriber:
+        # Multi-subscriber users can view dashboard without specific binding
+        bound_subscriber = None
+    else:
+        # Regular users must be bound to a subscriber
+        if not user_profile.is_bound:
+            messages.error(request, 'Your account is not bound to any organization. Please complete the binding process.')
+            return redirect('acctmgt:subscriber_selection')
+        
+        bound_subscriber = user_profile.get_bound_subscriber()
+        if not bound_subscriber:
+            messages.error(request, 'Unable to retrieve your organization information. Please contact support.')
+            return redirect('acctmgt:subscriber_selection')
     
     # Calculate date ranges
     today = timezone.now().date()
@@ -4015,6 +4306,48 @@ def delete_upload(request, upload_id):
         }, status=500)
 
 
+@login_required
+@csrf_exempt
+def cancel_upload(request, upload_id):
+    """
+    Cancel an upload session that is stuck or in progress.
+    Only allows cancellation of non-completed uploads by the user who created them.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        # Get the upload session, ensuring it belongs to the current user
+        upload_session = UploadSession.objects.get(
+            id=upload_id,
+            user=request.user
+        )
+        
+        # Only allow cancellation of non-completed uploads
+        if upload_session.status in ['completed', 'cancelled']:
+            return JsonResponse({
+                'error': f'Cannot cancel an upload that is already {upload_session.status}'
+            }, status=400)
+        
+        # Mark as cancelled
+        upload_session.mark_cancelled(reason='Cancelled by user from dashboard')
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Upload cancelled successfully'
+        })
+        
+    except UploadSession.DoesNotExist:
+        return JsonResponse({
+            'error': 'Upload not found or you do not have permission to cancel it'
+        }, status=404)
+    
+    except Exception as e:
+        return JsonResponse({
+            'error': f'An error occurred while cancelling the upload: {str(e)}'
+        }, status=500)
+
+
 def home(request):
     """
     Home view that redirects users based on authentication status.
@@ -4028,26 +4361,470 @@ def home(request):
 
 
 
+def build_excel_report(upload_session, user=None):
+    """
+    Build Excel report workbook as BytesIO buffer (no request dependency).
+    
+    Args:
+        upload_session: UploadSession instance
+        user: User instance (optional, for report metadata)
+    
+    Returns:
+        tuple: (BytesIO buffer, filename string)
+    """
+    from .tasks import load_from_parquet
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from io import BytesIO
+    
+    # Get subscriber info using the model's method
+    subscriber = upload_session.get_subscriber()
+    
+    # Create Excel workbook
+    wb = openpyxl.Workbook()
+    
+    # ============================================================
+    # SHEET 1: PROCESSING SUMMARY
+    # ============================================================
+    ws_summary = wb.active
+    ws_summary.title = "Processing Summary"
+    
+    # Styling
+    header_font = Font(bold=True, size=11, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    section_font = Font(bold=True, size=10, color="1F4E78")
+    normal_font = Font(size=10)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    # Color fills for excluded records highlighting
+    missing_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Light red for missing cells
+    reason_fill = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")  # Light yellow for exclusion reason
+    reason_header_fill = PatternFill(start_color="ED7D31", end_color="ED7D31", fill_type="solid")  # Orange for reason header
+    
+
+    row = 1
+    
+    # Title
+    ws_summary.merge_cells(f'A{row}:B{row}')
+    title_cell = ws_summary[f'A{row}']
+    title_cell.value = "FCB AUTO PROCESSING REPORT"
+    title_cell.font = Font(bold=True, size=14, color="1F4E78")
+    title_cell.alignment = Alignment(horizontal='center')
+    row += 2
+    
+    # Report Information Section
+    ws_summary[f'A{row}'] = "REPORT INFORMATION"
+    ws_summary[f'A{row}'].font = section_font
+    row += 1
+    
+    # Build user info for report
+    if user:
+        generated_by = f"{user.first_name} {user.last_name}" if user.first_name else user.username
+        user_email = user.email or 'Not provided'
+    else:
+        generated_by = 'System (Auto-generated)'
+        user_email = 'N/A'
+    
+    report_data = [
+        ['Generated On:', upload_session.completed_at.strftime('%B %d, %Y at %I:%M %p') if upload_session.completed_at else 'N/A'],
+        ['Generated By:', generated_by],
+        ['User Email:', user_email],
+        ['Report ID:', f"RPT-{upload_session.id:06d}"]
+    ]
+        
+    for label, value in report_data:
+        ws_summary[f'A{row}'] = label
+        ws_summary[f'B{row}'] = value
+        ws_summary[f'A{row}'].font = Font(bold=True, size=10)
+        row += 1
+    
+    row += 1
+    
+    # Subscriber Information Section
+    ws_summary[f'A{row}'] = "SUBSCRIBER INFORMATION"
+    ws_summary[f'A{row}'].font = section_font
+    row += 1
+    
+    subscriber_data = [
+        ['Subscriber Name:', subscriber.subscriber_name if subscriber else 'Unknown'],
+        ['Subscriber ID:', str(upload_session.subscriber_id)],
+        ['Processing Date:', upload_session.uploaded_at.strftime('%B %d, %Y') if upload_session.uploaded_at else 'N/A'],
+        ['Processing Time:', upload_session.completed_at.strftime('%I:%M %p') if upload_session.completed_at else 'N/A']
+    ]
+    
+    for label, value in subscriber_data:
+        ws_summary[f'A{row}'] = label
+        ws_summary[f'B{row}'] = value
+        ws_summary[f'A{row}'].font = Font(bold=True, size=10)
+        row += 1
+    
+    row += 1
+    
+    # File Processing Details Section
+    ws_summary[f'A{row}'] = "FILE PROCESSING DETAILS"
+    ws_summary[f'A{row}'].font = section_font
+    row += 1
+    
+    processing_data = [
+        ['Original Filename:', upload_session.original_filename or 'N/A'],
+        ['Processing Duration:', f"{upload_session.processing_time:.2f} seconds" if upload_session.processing_time else 'Not recorded'],
+        ['Processing Status:', upload_session.get_status_display()],
+        ['Processing Method:', 'Automated Excel Processing with Data Validation']
+    ]
+    
+    for label, value in processing_data:
+        ws_summary[f'A{row}'] = label
+        ws_summary[f'B{row}'] = value
+        ws_summary[f'A{row}'].font = Font(bold=True, size=10)
+        row += 1
+    
+    row += 1
+    
+    # Processing Results Section (replacing Credit Records Merge Analysis)
+    ws_summary[f'A{row}'] = "PROCESSING RESULTS"
+    ws_summary[f'A{row}'].font = section_font
+    row += 1
+    
+    # Get credit analysis data
+    total_credit_unmerged = upload_session.unmatched_credit_records or 0
+    individual_matched = upload_session.individual_records or 0
+    corporate_matched = upload_session.corporate_records or 0
+    total_credits_processed = individual_matched + corporate_matched + total_credit_unmerged
+    total_matched = individual_matched + corporate_matched
+    
+    # Get excluded record counts
+    excluded_individual = upload_session.excluded_individual_records or 0
+    excluded_corporate = upload_session.excluded_corporate_records or 0
+    total_excluded = excluded_individual + excluded_corporate
+    
+    processing_results_data = [
+        ['Individual Borrowers:', f"{individual_matched:,} records"],
+        ['Corporate Borrowers:', f"{corporate_matched:,} records"],
+        ['Total Credits Processed:', f"{total_credits_processed:,} records"],
+        ['Matched Credits:', f"{total_matched:,} records"],
+        ['Unmatched Credits:', f"{total_credit_unmerged:,} records"],
+        ['', ''],  # Blank row for spacing
+        ['EXCLUDED RECORDS (Data Quality):', ''],
+        ['Individual Excluded:', f"{excluded_individual:,} records"],
+        ['Corporate Excluded:', f"{excluded_corporate:,} records"],
+        ['Total Excluded:', f"{total_excluded:,} records"],
+    ]
+    
+    for label, value in processing_results_data:
+        ws_summary[f'A{row}'] = label
+        ws_summary[f'B{row}'] = value
+        if label and not label.startswith('EXCLUDED'):
+            ws_summary[f'A{row}'].font = Font(bold=True, size=10)
+        elif label.startswith('EXCLUDED'):
+            ws_summary[f'A{row}'].font = Font(bold=True, size=10, color="C65911")
+        row += 1
+    
+    row += 1
+    
+    # Footer
+    ws_summary.merge_cells(f'A{row}:D{row}')
+    footer_cell = ws_summary[f'A{row}']
+    footer_cell.value = f"This report was automatically generated by FCB Auto Processing System on {upload_session.completed_at.strftime('%B %d, %Y') if upload_session.completed_at else 'N/A'}."
+    footer_cell.font = Font(size=9, italic=True, color="666666")
+    footer_cell.alignment = Alignment(horizontal='center')
+    
+    # Adjust column widths for summary sheet
+    ws_summary.column_dimensions['A'].width = 25
+    ws_summary.column_dimensions['B'].width = 40
+    ws_summary.column_dimensions['C'].width = 15
+    ws_summary.column_dimensions['D'].width = 20
+    
+    # ============================================================
+    # SHEET 2: UNMATCHED CREDITS
+    # ============================================================
+    ws_unmatched = wb.create_sheet(title="Unmatched Credits")
+    
+    # Load unmatched credits from Parquet
+    try:
+        unmatched_credits = load_from_parquet(upload_session.id, 'unmatched_credits')
+        logger.info(f"[EXCEL REPORT] Loaded {len(unmatched_credits)} unmatched credits from Parquet")
+    except FileNotFoundError as e:
+        # If no Parquet file, create empty DataFrame
+        logger.info(f"[EXCEL REPORT] Parquet file not found: {e}")
+        unmatched_credits = pd.DataFrame(columns=['CUSTOMERID', 'ACCOUNTNUMBER', 'ACCOUNTSTATUS', 'CREDITLIMIT', 'AVAILEDLIMIT'])
+    except Exception as e:
+        # Catch any other errors
+        logger.info(f"[EXCEL REPORT] Error loading unmatched credits: {e}")
+        unmatched_credits = pd.DataFrame(columns=['CUSTOMERID', 'ACCOUNTNUMBER', 'ACCOUNTSTATUS', 'CREDITLIMIT', 'AVAILEDLIMIT'])
+    
+    # Title
+    ws_unmatched.merge_cells('A1:E1')
+    title_cell = ws_unmatched['A1']
+    title_cell.value = "Unmatched Credit Records"
+    title_cell.font = Font(bold=True, size=14, color="1F4E78")
+    title_cell.alignment = Alignment(horizontal='center')
+    
+    # Description
+    ws_unmatched.merge_cells('A2:E2')
+    desc_cell = ws_unmatched['A2']
+    desc_cell.value = f"These credit records could not be matched to any borrower (Individual or Corporate). Total Records: {len(unmatched_credits):,}"
+    desc_cell.font = Font(size=10, italic=True)
+    desc_cell.alignment = Alignment(horizontal='center')
+    
+    # Add unmatched credits data
+    if not unmatched_credits.empty:
+        # Write headers
+        for col_idx, col_name in enumerate(unmatched_credits.columns, start=1):
+            cell = ws_unmatched.cell(row=4, column=col_idx)
+            cell.value = col_name
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = border
+        
+        # Write data rows
+        for row_idx, row_data in enumerate(dataframe_to_rows(unmatched_credits, index=False, header=False), start=5):
+            for col_idx, value in enumerate(row_data, start=1):
+                cell = ws_unmatched.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = border
+                
+                # Format numeric columns
+                if col_idx in [4, 5]:  # CREDITLIMIT and AVAILEDLIMIT
+                    try:
+                        cell.number_format = '#,##0.00'
+                    except Exception:
+                        pass
+    else:
+        # No unmatched credits
+        ws_unmatched.merge_cells('A4:E4')
+        no_data_cell = ws_unmatched['A4']
+        no_data_cell.value = "✓ All credit records were successfully matched to borrowers!"
+        no_data_cell.font = Font(size=12, color="008000", bold=True)
+        no_data_cell.alignment = Alignment(horizontal='center')
+    
+    # Adjust column widths for unmatched credits sheet
+    ws_unmatched.column_dimensions['A'].width = 20  # CUSTOMERID
+    ws_unmatched.column_dimensions['B'].width = 20  # ACCOUNTNUMBER
+    ws_unmatched.column_dimensions['C'].width = 20  # ACCOUNTSTATUS
+    ws_unmatched.column_dimensions['D'].width = 18  # CREDITLIMIT
+    ws_unmatched.column_dimensions['E'].width = 18  # AVAILEDLIMIT
+    
+    # ============================================================
+    # SHEET 3: EXCLUDED RECORDS
+    # ============================================================
+    ws_excluded = wb.create_sheet(title="Excluded Records")
+    
+    # Load excluded records from Parquet
+    try:
+        excluded_individual_df = load_from_parquet(upload_session.id, 'excluded_individual')
+        logger.info(f"[EXCEL REPORT] Loaded {len(excluded_individual_df)} excluded individual records from Parquet")
+    except FileNotFoundError:
+        excluded_individual_df = pd.DataFrame()
+    except Exception as e:
+        logger.info(f"[EXCEL REPORT] Error loading excluded individual records: {e}")
+        excluded_individual_df = pd.DataFrame()
+    
+    try:
+        excluded_corporate_df = load_from_parquet(upload_session.id, 'excluded_corporate')
+        logger.info(f"[EXCEL REPORT] Loaded {len(excluded_corporate_df)} excluded corporate records from Parquet")
+    except FileNotFoundError:
+        excluded_corporate_df = pd.DataFrame()
+    except Exception as e:
+        logger.info(f"[EXCEL REPORT] Error loading excluded corporate records: {e}")
+        excluded_corporate_df = pd.DataFrame()
+    
+    current_row = 1
+    
+    # ============================================================
+    # SECTION 1: EXCLUDED INDIVIDUAL BORROWERS
+    # ============================================================
+    # Section title
+    ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+    title_cell = ws_excluded[f'A{current_row}']
+    title_cell.value = "EXCLUDED INDIVIDUAL BORROWERS"
+    title_cell.font = Font(bold=True, size=12, color="FFFFFF")
+    title_cell.fill = PatternFill(start_color="C65911", end_color="C65911", fill_type="solid")
+    title_cell.alignment = Alignment(horizontal='left')
+    current_row += 1
+    
+    # Description
+    ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+    desc_cell = ws_excluded[f'A{current_row}']
+    desc_cell.value = f"Records excluded due to missing validation columns. Total: {len(excluded_individual_df):,} records"
+    desc_cell.font = Font(size=10, italic=True)
+    current_row += 2
+    
+    # Individual data
+    if not excluded_individual_df.empty:
+        # Get column positions for highlighting
+        columns_list = list(excluded_individual_df.columns)
+        exclusion_reason_col_idx = columns_list.index('EXCLUSION_REASON') + 1 if 'EXCLUSION_REASON' in columns_list else None
+        
+        # Map validated fields to their column indices (for individual borrowers)
+        individual_validated_columns = {
+            'AVAILEDLIMIT': columns_list.index('AVAILEDLIMIT') + 1 if 'AVAILEDLIMIT' in columns_list else None,
+            'DATEOFBIRTH': columns_list.index('DATEOFBIRTH') + 1 if 'DATEOFBIRTH' in columns_list else None,
+            'BVNNUMBER': columns_list.index('BVNNUMBER') + 1 if 'BVNNUMBER' in columns_list else None,
+            'NATIONALIDENTITYNUMBER': columns_list.index('NATIONALIDENTITYNUMBER') + 1 if 'NATIONALIDENTITYNUMBER' in columns_list else None,
+            'LOANEFFECTIVEDATE': columns_list.index('LOANEFFECTIVEDATE') + 1 if 'LOANEFFECTIVEDATE' in columns_list else None,
+        }
+        
+        # Write headers
+        for col_idx, col_name in enumerate(excluded_individual_df.columns, start=1):
+            cell = ws_excluded.cell(row=current_row, column=col_idx)
+            cell.value = col_name
+            cell.font = header_font
+            # Use orange header for EXCLUSION_REASON column
+            if col_name == 'EXCLUSION_REASON':
+                cell.fill = reason_header_fill
+            else:
+                cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = border
+        current_row += 1
+        
+        # Write data rows with color highlighting for missing cells
+        for row_idx, df_row in excluded_individual_df.iterrows():
+            exclusion_reason = str(df_row.get('EXCLUSION_REASON', ''))
+            
+            for col_idx, col_name in enumerate(columns_list, start=1):
+                value = df_row[col_name]
+                cell = ws_excluded.cell(row=current_row, column=col_idx, value=value)
+                cell.border = border
+                
+                # Apply highlighting based on column and exclusion reason
+                if col_name == 'EXCLUSION_REASON':
+                    cell.fill = reason_fill
+                    cell.font = Font(size=10, bold=True)
+                else:
+                    # Check if this column is mentioned in the exclusion reason as missing
+                    value_is_empty = pd.isna(value) or str(value).strip() == ''
+                    
+                    # Highlight if cell is empty AND column is related to a missing field
+                    should_highlight = False
+                    if value_is_empty:
+                        if col_name == 'AVAILEDLIMIT' and 'AVAILEDLIMIT' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'DATEOFBIRTH' and 'DATEOFBIRTH' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'BVNNUMBER' and 'BVN/NIN' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'NATIONALIDENTITYNUMBER' and 'BVN/NIN' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'LOANEFFECTIVEDATE' and 'LOANEFFECTIVEDATE' in exclusion_reason:
+                            should_highlight = True
+                    
+                    if should_highlight:
+                        cell.fill = missing_fill
+            
+            current_row += 1
+    else:
+        ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+        no_data_cell = ws_excluded[f'A{current_row}']
+        no_data_cell.value = "✓ No individual records were excluded"
+        no_data_cell.font = Font(size=10, color="008000", bold=True)
+        current_row += 1
+    
+    # Add spacing between sections
+    current_row += 3
+    
+    # ============================================================
+    # SECTION 2: EXCLUDED CORPORATE BORROWERS
+    # ============================================================
+    # Section title
+    ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+    title_cell = ws_excluded[f'A{current_row}']
+    title_cell.value = "EXCLUDED CORPORATE BORROWERS"
+    title_cell.font = Font(bold=True, size=12, color="FFFFFF")
+    title_cell.fill = PatternFill(start_color="C65911", end_color="C65911", fill_type="solid")
+    title_cell.alignment = Alignment(horizontal='left')
+    current_row += 1
+    
+    # Description
+    ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+    desc_cell = ws_excluded[f'A{current_row}']
+    desc_cell.value = f"Records excluded due to missing validation columns. Total: {len(excluded_corporate_df):,} records"
+    desc_cell.font = Font(size=10, italic=True)
+    current_row += 2
+    
+    # Corporate data
+    if not excluded_corporate_df.empty:
+        # Get column positions for highlighting
+        columns_list_corp = list(excluded_corporate_df.columns)
+        
+        # Write headers
+        for col_idx, col_name in enumerate(excluded_corporate_df.columns, start=1):
+            cell = ws_excluded.cell(row=current_row, column=col_idx)
+            cell.value = col_name
+            cell.font = header_font
+            # Use orange header for EXCLUSION_REASON column
+            if col_name == 'EXCLUSION_REASON':
+                cell.fill = reason_header_fill
+            else:
+                cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = border
+        current_row += 1
+        
+        # Write data rows with color highlighting for missing cells
+        for row_idx, df_row in excluded_corporate_df.iterrows():
+            exclusion_reason = str(df_row.get('EXCLUSION_REASON', ''))
+            
+            for col_idx, col_name in enumerate(columns_list_corp, start=1):
+                value = df_row[col_name]
+                cell = ws_excluded.cell(row=current_row, column=col_idx, value=value)
+                cell.border = border
+                
+                # Apply highlighting based on column and exclusion reason
+                if col_name == 'EXCLUSION_REASON':
+                    cell.fill = reason_fill
+                    cell.font = Font(size=10, bold=True)
+                else:
+                    # Check if this column is mentioned in the exclusion reason as missing
+                    value_is_empty = pd.isna(value) or str(value).strip() == ''
+                    
+                    # Highlight if cell is empty AND column is related to a missing field
+                    should_highlight = False
+                    if value_is_empty:
+                        if col_name == 'AVAILEDLIMIT' and 'AVAILEDLIMIT' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'BUSINESSNAME' and 'BUSINESSNAME' in exclusion_reason:
+                            should_highlight = True
+                        elif col_name == 'LOANEFFECTIVEDATE' and 'LOANEFFECTIVEDATE' in exclusion_reason:
+                            should_highlight = True
+                    
+                    if should_highlight:
+                        cell.fill = missing_fill
+            
+            current_row += 1
+    else:
+        ws_excluded.merge_cells(f'A{current_row}:F{current_row}')
+        no_data_cell = ws_excluded[f'A{current_row}']
+        no_data_cell.value = "✓ No corporate records were excluded"
+        no_data_cell.font = Font(size=10, color="008000", bold=True)
+        current_row += 1
+    
+    # ============================================================
+    # SAVE AND RETURN EXCEL FILE
+    # ============================================================
+    
+    # Create filename
+    filename = f"FCB_Report_{upload_session.id}_{upload_session.uploaded_at.strftime('%Y%m%d') if upload_session.uploaded_at else 'unknown'}.xlsx"
+    
+    # Save to BytesIO
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    
+    return buffer, filename
+
+
 @login_required
 def generate_excel_report(request, session_id):
     """
-    Generate comprehensive Excel report with processing summary and unmatched credits
-    
-    Args:
-        request: Django request object
-        session_id: UploadSession ID
-    
-    Returns:
-        Excel file download response
+    View wrapper for build_excel_report — returns HTTP download response.
     """
     try:
-        from acctmgt.models import SubscriberToken
-        from .tasks import load_from_parquet
-        import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        from openpyxl.utils.dataframe import dataframe_to_rows
-        
-        # Get upload session
         upload_session = UploadSession.objects.filter(
             id=session_id,
             user=request.user
@@ -4056,239 +4833,19 @@ def generate_excel_report(request, session_id):
         if not upload_session:
             return HttpResponse("Upload session not found or access denied.", status=404)
         
-        # Get subscriber info using the model's method
-        subscriber = upload_session.get_subscriber()
+        buffer, filename = build_excel_report(upload_session, user=request.user)
         
-        # Create Excel workbook
-        wb = openpyxl.Workbook()
-        
-        # ============================================================
-        # SHEET 1: PROCESSING SUMMARY
-        # ============================================================
-        ws_summary = wb.active
-        ws_summary.title = "Processing Summary"
-        
-        # Styling
-        header_font = Font(bold=True, size=11, color="FFFFFF")
-        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        section_font = Font(bold=True, size=10, color="1F4E78")
-        normal_font = Font(size=10)
-        border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        row = 1
-        
-        # Title
-        ws_summary.merge_cells(f'A{row}:B{row}')
-        title_cell = ws_summary[f'A{row}']
-        title_cell.value = "FCB AUTO PROCESSING REPORT"
-        title_cell.font = Font(bold=True, size=14, color="1F4E78")
-        title_cell.alignment = Alignment(horizontal='center')
-        row += 2
-        
-        # Report Information Section
-        ws_summary[f'A{row}'] = "REPORT INFORMATION"
-        ws_summary[f'A{row}'].font = section_font
-        row += 1
-        
-        report_data = [
-            ['Generated On:', upload_session.completed_at.strftime('%B %d, %Y at %I:%M %p') if upload_session.completed_at else 'N/A'],
-            ['Generated By:', f"{request.user.first_name} {request.user.last_name}" if request.user.first_name else request.user.username],
-            ['User Email:', request.user.email or 'Not provided'],
-            ['Report ID:', f"RPT-{upload_session.id:06d}"]
-        ]
-        
-        for label, value in report_data:
-            ws_summary[f'A{row}'] = label
-            ws_summary[f'B{row}'] = value
-            ws_summary[f'A{row}'].font = Font(bold=True, size=10)
-            row += 1
-        
-        row += 1
-        
-        # Subscriber Information Section
-        ws_summary[f'A{row}'] = "SUBSCRIBER INFORMATION"
-        ws_summary[f'A{row}'].font = section_font
-        row += 1
-        
-        subscriber_data = [
-            ['Subscriber Name:', subscriber.subscriber_name if subscriber else 'Unknown'],
-            ['Subscriber ID:', str(upload_session.subscriber_id)],
-            ['Processing Date:', upload_session.uploaded_at.strftime('%B %d, %Y') if upload_session.uploaded_at else 'N/A'],
-            ['Processing Time:', upload_session.completed_at.strftime('%I:%M %p') if upload_session.completed_at else 'N/A']
-        ]
-        
-        for label, value in subscriber_data:
-            ws_summary[f'A{row}'] = label
-            ws_summary[f'B{row}'] = value
-            ws_summary[f'A{row}'].font = Font(bold=True, size=10)
-            row += 1
-        
-        row += 1
-        
-        # File Processing Details Section
-        ws_summary[f'A{row}'] = "FILE PROCESSING DETAILS"
-        ws_summary[f'A{row}'].font = section_font
-        row += 1
-        
-        processing_data = [
-            ['Original Filename:', upload_session.original_filename or 'N/A'],
-            ['Processing Duration:', f"{upload_session.processing_time:.2f} seconds" if upload_session.processing_time else 'Not recorded'],
-            ['Processing Status:', upload_session.get_status_display()],
-            ['Processing Method:', 'Automated Excel Processing with Data Validation']
-        ]
-        
-        for label, value in processing_data:
-            ws_summary[f'A{row}'] = label
-            ws_summary[f'B{row}'] = value
-            ws_summary[f'A{row}'].font = Font(bold=True, size=10)
-            row += 1
-        
-        row += 1
-        
-        # Processing Results Section (replacing Credit Records Merge Analysis)
-        ws_summary[f'A{row}'] = "PROCESSING RESULTS"
-        ws_summary[f'A{row}'].font = section_font
-        row += 1
-        
-        # Get credit analysis data
-        total_credit_unmerged = upload_session.unmatched_credit_records or 0
-        individual_matched = upload_session.individual_records or 0
-        corporate_matched = upload_session.corporate_records or 0
-        total_credits_processed = individual_matched + corporate_matched + total_credit_unmerged
-        total_matched = individual_matched + corporate_matched
-        
-        processing_results_data = [
-            ['Individual Borrowers:', f"{individual_matched:,} records"],
-            ['Corporate Borrowers:', f"{corporate_matched:,} records"],
-            ['Total Credits Processed:', f"{total_credits_processed:,} records"],
-            ['Matched Credits:', f"{total_matched:,} records"],
-            ['Unmatched Credits:', f"{total_credit_unmerged:,} records"]
-        ]
-        
-        for label, value in processing_results_data:
-            ws_summary[f'A{row}'] = label
-            ws_summary[f'B{row}'] = value
-            ws_summary[f'A{row}'].font = Font(bold=True, size=10)
-            row += 1
-        
-        row += 1
-        
-        # Footer
-        ws_summary.merge_cells(f'A{row}:D{row}')
-        footer_cell = ws_summary[f'A{row}']
-        footer_cell.value = f"This report was automatically generated by FCB Auto Processing System on {upload_session.completed_at.strftime('%B %d, %Y') if upload_session.completed_at else 'N/A'}."
-        footer_cell.font = Font(size=9, italic=True, color="666666")
-        footer_cell.alignment = Alignment(horizontal='center')
-        
-        # Adjust column widths for summary sheet
-        ws_summary.column_dimensions['A'].width = 25
-        ws_summary.column_dimensions['B'].width = 40
-        ws_summary.column_dimensions['C'].width = 15
-        ws_summary.column_dimensions['D'].width = 20
-        
-        # ============================================================
-        # SHEET 2: UNMATCHED CREDITS
-        # ============================================================
-        ws_unmatched = wb.create_sheet(title="Unmatched Credits")
-        
-        # Load unmatched credits from Parquet
-        try:
-            unmatched_credits = load_from_parquet(upload_session.id, 'unmatched_credits')
-            print(f"[EXCEL REPORT] Loaded {len(unmatched_credits)} unmatched credits from Parquet")
-        except FileNotFoundError as e:
-            # If no Parquet file, create empty DataFrame
-            print(f"[EXCEL REPORT] Parquet file not found: {e}")
-            unmatched_credits = pd.DataFrame(columns=['CUSTOMERID', 'ACCOUNTNUMBER', 'ACCOUNTSTATUS', 'CREDITLIMIT', 'AVAILEDLIMIT'])
-        except Exception as e:
-            # Catch any other errors
-            print(f"[EXCEL REPORT] Error loading unmatched credits: {e}")
-            unmatched_credits = pd.DataFrame(columns=['CUSTOMERID', 'ACCOUNTNUMBER', 'ACCOUNTSTATUS', 'CREDITLIMIT', 'AVAILEDLIMIT'])
-        
-        # Title
-        ws_unmatched.merge_cells('A1:E1')
-        title_cell = ws_unmatched['A1']
-        title_cell.value = "Unmatched Credit Records"
-        title_cell.font = Font(bold=True, size=14, color="1F4E78")
-        title_cell.alignment = Alignment(horizontal='center')
-        
-        # Description
-        ws_unmatched.merge_cells('A2:E2')
-        desc_cell = ws_unmatched['A2']
-        desc_cell.value = f"These credit records could not be matched to any borrower (Individual or Corporate). Total Records: {len(unmatched_credits):,}"
-        desc_cell.font = Font(size=10, italic=True)
-        desc_cell.alignment = Alignment(horizontal='center')
-        
-        # Add unmatched credits data
-        if not unmatched_credits.empty:
-            # Write headers
-            for col_idx, col_name in enumerate(unmatched_credits.columns, start=1):
-                cell = ws_unmatched.cell(row=4, column=col_idx)
-                cell.value = col_name
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal='center')
-                cell.border = border
-            
-            # Write data rows
-            for row_idx, row_data in enumerate(dataframe_to_rows(unmatched_credits, index=False, header=False), start=5):
-                for col_idx, value in enumerate(row_data, start=1):
-                    cell = ws_unmatched.cell(row=row_idx, column=col_idx, value=value)
-                    cell.border = border
-                    
-                    # Format numeric columns
-                    if col_idx in [4, 5]:  # CREDITLIMIT and AVAILEDLIMIT
-                        try:
-                            cell.number_format = '#,##0.00'
-                        except:
-                            pass
-        else:
-            # No unmatched credits
-            ws_unmatched.merge_cells('A4:E4')
-            no_data_cell = ws_unmatched['A4']
-            no_data_cell.value = "✓ All credit records were successfully matched to borrowers!"
-            no_data_cell.font = Font(size=12, color="008000", bold=True)
-            no_data_cell.alignment = Alignment(horizontal='center')
-        
-        # Adjust column widths for unmatched credits sheet
-        ws_unmatched.column_dimensions['A'].width = 20  # CUSTOMERID
-        ws_unmatched.column_dimensions['B'].width = 20  # ACCOUNTNUMBER
-        ws_unmatched.column_dimensions['C'].width = 20  # ACCOUNTSTATUS
-        ws_unmatched.column_dimensions['D'].width = 18  # CREDITLIMIT
-        ws_unmatched.column_dimensions['E'].width = 18  # AVAILEDLIMIT
-        
-        # ============================================================
-        # SAVE AND RETURN EXCEL FILE
-        # ============================================================
-        
-        # Create filename
-        filename = f"FCB_Report_{upload_session.id}_{upload_session.uploaded_at.strftime('%Y%m%d') if upload_session.uploaded_at else 'unknown'}.xlsx"
-        
-        # Save to BytesIO
-        from io import BytesIO
-        buffer = BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-        
-        # Create response
         response = HttpResponse(
             buffer.getvalue(),
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        
         return response
         
-    except UploadSession.DoesNotExist:
-        return HttpResponse("Upload session not found or access denied.", status=404)
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"[EXCEL REPORT ERROR] {error_details}")
+        logger.info(f"[EXCEL REPORT ERROR] {error_details}")
         return HttpResponse(f"Error generating Excel report: {str(e)}", status=500)
 
 
@@ -4388,7 +4945,7 @@ def progress_tracking(request, session_id):
                 from .models import Subscriber
                 subscriber = Subscriber.objects.get(subscriber_id=upload_session.subscriber_id)
                 subscriber_name = subscriber.subscriber_name
-            except:
+            except Exception:
                 subscriber_name = f"Subscriber {upload_session.subscriber_id}"
         
         context = {
@@ -4436,6 +4993,7 @@ def progress_api(request, session_id):
             'has_verification_candidates': upload_session.has_verification_candidates,
             'commercial_candidates_count': upload_session.commercial_candidates_count,
             'consumer_candidates_count': upload_session.consumer_candidates_count,
+            'verification_skipped': upload_session.verification_skipped,
             
             # File paths
             'individual_file_path': upload_session.individual_file_path,
@@ -4453,6 +5011,15 @@ def progress_api(request, session_id):
             'verification_completed_at': upload_session.verification_completed_at.isoformat() if upload_session.verification_completed_at else None,
         }
         
+        # Add friendly error information if there's an error
+        if upload_session.error_message:
+            try:
+                from .error_messages import get_friendly_error
+                friendly_error = get_friendly_error(upload_session.error_message)
+                data['friendly_error'] = friendly_error
+            except ImportError:
+                pass
+        
         return JsonResponse(data)
         
     except UploadSession.DoesNotExist:
@@ -4460,3 +5027,103 @@ def progress_api(request, session_id):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+
+@csrf_exempt
+@login_required
+def submit_feedback(request):
+    """
+    Handle feedback submission from the in-app feedback modal.
+    Accepts POST with JSON body containing rating, category, message.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        # Parse JSON body
+        data = json.loads(request.body)
+        
+        rating = data.get('rating')
+        category = data.get('category', 'general')
+        message = data.get('message', '').strip()
+        page_url = data.get('page_url', '')
+        
+        # Validate required fields
+        if not rating or not isinstance(rating, int) or rating < 1 or rating > 5:
+            return JsonResponse({'error': 'Please provide a valid rating (1-5)'}, status=400)
+        
+        if not message:
+            return JsonResponse({'error': 'Please provide feedback message'}, status=400)
+        
+        # Validate category
+        valid_categories = ['bug', 'feature', 'general']
+        if category not in valid_categories:
+            category = 'general'
+        
+        # Import and create feedback
+        from .models import Feedback
+        
+        feedback = Feedback.objects.create(
+            user=request.user if request.user.is_authenticated else None,
+            rating=rating,
+            category=category,
+            message=message,
+            page_url=page_url
+        )
+        
+        logger.info(f"[FEEDBACK] New feedback submitted: {feedback.category} - {feedback.rating}★ from {request.user.username}")
+        
+        # Send email notification
+        try:
+            from django.core.mail import send_mail
+            from django.conf import settings
+            
+            # Get subscriber name if user is bound to one
+            subscriber_name = 'Not bound'
+            try:
+                from acctmgt.models import UserProfile
+                profile = UserProfile.objects.filter(user=request.user, is_bound=True).first()
+                if profile:
+                    subscriber = profile.get_bound_subscriber()
+                    if subscriber:
+                        subscriber_name = subscriber.subscriber_name
+            except Exception:
+                pass
+            
+            star_display = '★' * rating + '☆' * (5 - rating)
+            email_subject = f'[Feedback] {feedback.get_category_display()} - {star_display}'
+            email_body = f"""New feedback received from the Data Processing Suite:
+
+User: {request.user.username if request.user.is_authenticated else 'Anonymous'}
+Subscriber: {subscriber_name}
+Rating: {star_display} ({rating}/5)
+Category: {feedback.get_category_display()}
+Page: {page_url}
+Time: {feedback.created_at.strftime('%Y-%m-%d %H:%M:%S') if feedback.created_at else 'N/A'}
+
+Message:
+{message}
+
+---
+View all feedback at: /admin/auto/feedback/
+"""
+            send_mail(
+                subject=email_subject,
+                message=email_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[settings.FEEDBACK_EMAIL_RECIPIENT],
+                fail_silently=True  # Don't break submission if email fails
+            )
+            logger.info(f"[FEEDBACK] Email notification sent to {settings.FEEDBACK_EMAIL_RECIPIENT}")
+        except Exception as email_error:
+            logger.warning(f"[FEEDBACK] Email notification failed: {str(email_error)}")
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Thank you for your feedback!'
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON data'}, status=400)
+    except Exception as e:
+        logger.error(f"[FEEDBACK] Error saving feedback: {str(e)}")
+        return JsonResponse({'error': 'Failed to save feedback. Please try again.'}, status=500)

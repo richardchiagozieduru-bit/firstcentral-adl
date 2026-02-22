@@ -29,6 +29,12 @@ class SubscriberSessionMiddleware(MiddlewareMixin):
         """
         # Skip middleware for exempt URLs
         if any(request.path.startswith(url) for url in self.EXEMPT_URLS):
+            # Clear any accumulated messages when accessing admin to prevent stacking
+            if request.path.startswith('/admin/'):
+                storage = messages.get_messages(request)
+                # Iterate through messages to mark them as used/cleared
+                for _ in storage:
+                    pass
             return None
         
         # Skip middleware for unauthenticated users (they'll be handled by LoginRequiredMixin)
@@ -38,6 +44,10 @@ class SubscriberSessionMiddleware(MiddlewareMixin):
         # Check if user is bound to a subscriber (new binding system)
         from .models import UserProfile
         try:
+            # Multi-subscriber users don't need binding - they select subscriber on upload
+            if request.user.groups.filter(name='multi_subscriber').exists():
+                return None
+            
             user_profile = UserProfile.get_or_create_profile(request.user)
             
             if not user_profile.is_bound:

@@ -51,6 +51,156 @@
           text-decoration: none;
       }
 
+      /* ============================================= */
+      /* FEEDBACK MODAL STYLES (Global)               */
+      /* ============================================= */
+      .feedback-float-btn {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: linear-gradient(135deg, #0d6efd 0%, #0056b3 100%);
+        color: white;
+        border: none;
+        padding: 12px 20px;
+        border-radius: 50px;
+        font-weight: 500;
+        font-size: 0.9rem;
+        cursor: pointer;
+        box-shadow: 0 4px 15px rgba(13, 110, 253, 0.4);
+        transition: all 0.3s ease;
+        z-index: 1000;
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      
+      .feedback-float-btn:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 6px 20px rgba(13, 110, 253, 0.5);
+        color: white;
+      }
+      
+      .feedback-modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1001;
+        backdrop-filter: blur(4px);
+      }
+      
+      .feedback-modal-overlay.show {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        animation: feedbackFadeIn 0.2s ease;
+      }
+      
+      @keyframes feedbackFadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      
+      .feedback-modal {
+        background: white;
+        border-radius: 16px;
+        padding: 2rem;
+        width: 90%;
+        max-width: 450px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        animation: feedbackSlideUp 0.3s ease;
+      }
+      
+      @keyframes feedbackSlideUp {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      
+      .feedback-modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+      }
+      
+      .feedback-modal-header h3 {
+        margin: 0;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #212529;
+      }
+      
+      .feedback-close-btn {
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        color: #6c757d;
+        cursor: pointer;
+        padding: 0;
+        line-height: 1;
+      }
+      
+      .feedback-close-btn:hover { color: #212529; }
+      
+      .star-rating { margin-bottom: 1.5rem; }
+      .star-rating label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: #495057; font-size: 0.9rem; }
+      .star-rating .stars { display: flex; gap: 4px; }
+      .star-rating .star { font-size: 2rem; color: #dee2e6; cursor: pointer; transition: color 0.15s ease, transform 0.15s ease; }
+      .star-rating .star:hover, .star-rating .star.active { color: #ffc107; }
+      .star-rating .star:hover { transform: scale(1.1); }
+      
+      .feedback-category, .feedback-message { margin-bottom: 1.5rem; }
+      .feedback-category label, .feedback-message label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: #495057; font-size: 0.9rem; }
+      .feedback-category select, .feedback-message textarea { width: 100%; padding: 0.75rem 1rem; border: 1px solid #dee2e6; border-radius: 8px; font-size: 0.95rem; font-family: inherit; }
+      .feedback-category select:focus, .feedback-message textarea:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15); }
+      .feedback-message textarea { min-height: 120px; resize: vertical; }
+      
+      .feedback-submit-btn {
+        width: 100%;
+        padding: 0.875rem;
+        background: linear-gradient(135deg, #0d6efd 0%, #0056b3 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+      }
+      
+      .feedback-submit-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3); }
+      .feedback-submit-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+      .feedback-submit-btn .spinner { display: none; width: 18px; height: 18px; border: 2px solid #ffffff; border-top-color: transparent; border-radius: 50%; animation: feedbackSpinner 0.75s linear infinite; }
+      .feedback-submit-btn.loading .spinner { display: inline-block; }
+      .feedback-submit-btn.loading .btn-text { display: none; }
+      
+      @keyframes feedbackSpinner { to { transform: rotate(360deg); } }
+      
+      .feedback-toast {
+        position: fixed;
+        bottom: 90px;
+        right: 24px;
+        padding: 1rem 1.5rem;
+        border-radius: 8px;
+        color: white;
+        font-weight: 500;
+        z-index: 1002;
+        display: none;
+      }
+      .feedback-toast.show { display: block; animation: feedbackSlideIn 0.3s ease; }
+      .feedback-toast.success { background: linear-gradient(135deg, #198754 0%, #157347 100%); }
+      .feedback-toast.error { background: linear-gradient(135deg, #dc3545 0%, #bb2d3b 100%); }
+      
+      @keyframes feedbackSlideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -110,7 +260,145 @@
         {% block content %}{% endblock %}
     </main>
 
+    <!-- Global Feedback Button (visible on all pages) -->
+    {% if user.is_authenticated %}
+    <button type="button" class="feedback-float-btn" id="feedbackBtn">
+        <i class="fas fa-comment-dots"></i>
+        <span>Feedback</span>
+    </button>
+
+    <!-- Feedback Modal -->
+    <div class="feedback-modal-overlay" id="feedbackModal">
+        <div class="feedback-modal">
+            <div class="feedback-modal-header">
+                <h3><i class="fas fa-comment-alt me-2" style="color: #0d6efd;"></i>Share Your Feedback</h3>
+                <button type="button" class="feedback-close-btn" id="feedbackCloseBtn">&times;</button>
+            </div>
+            <form id="feedbackForm">
+                <div class="star-rating">
+                    <label>How would you rate your experience?</label>
+                    <div class="stars" id="starContainer">
+                        <span class="star" data-rating="1">★</span>
+                        <span class="star" data-rating="2">★</span>
+                        <span class="star" data-rating="3">★</span>
+                        <span class="star" data-rating="4">★</span>
+                        <span class="star" data-rating="5">★</span>
+                    </div>
+                    <input type="hidden" id="ratingInput" name="rating" value="">
+                </div>
+                <div class="feedback-category">
+                    <label for="categorySelect">Feedback Type</label>
+                    <select id="categorySelect" name="category">
+                        <option value="general">General Feedback</option>
+                        <option value="bug">Bug Report</option>
+                        <option value="feature">Feature Request</option>
+                    </select>
+                </div>
+                <div class="feedback-message">
+                    <label for="messageInput">Your Feedback</label>
+                    <textarea id="messageInput" name="message" placeholder="Tell us what's on your mind..."></textarea>
+                </div>
+                <button type="submit" class="feedback-submit-btn" id="feedbackSubmitBtn">
+                    <span class="btn-text"><i class="fas fa-paper-plane me-2"></i>Submit Feedback</span>
+                    <span class="spinner"></span>
+                </button>
+            </form>
+        </div>
+    </div>
+    <div class="feedback-toast" id="feedbackToast"></div>
+    {% endif %}
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Global Feedback Script -->
+    {% if user.is_authenticated %}
+    <script>
+    (function() {
+        const feedbackBtn = document.getElementById('feedbackBtn');
+        const feedbackModal = document.getElementById('feedbackModal');
+        const feedbackCloseBtn = document.getElementById('feedbackCloseBtn');
+        const feedbackForm = document.getElementById('feedbackForm');
+        const starContainer = document.getElementById('starContainer');
+        const ratingInput = document.getElementById('ratingInput');
+        const feedbackSubmitBtn = document.getElementById('feedbackSubmitBtn');
+        const feedbackToast = document.getElementById('feedbackToast');
+        
+        if (!feedbackBtn || !feedbackModal) return;
+        
+        let selectedRating = 0;
+        
+        feedbackBtn.addEventListener('click', function() {
+            feedbackModal.classList.add('show');
+            document.body.style.overflow = 'hidden';
+        });
+        
+        function closeModal() {
+            feedbackModal.classList.remove('show');
+            document.body.style.overflow = '';
+            resetForm();
+        }
+        
+        feedbackCloseBtn.addEventListener('click', closeModal);
+        feedbackModal.addEventListener('click', function(e) { if (e.target === feedbackModal) closeModal(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && feedbackModal.classList.contains('show')) closeModal(); });
+        
+        const stars = starContainer.querySelectorAll('.star');
+        stars.forEach(function(star) {
+            star.addEventListener('click', function() {
+                selectedRating = parseInt(this.dataset.rating);
+                ratingInput.value = selectedRating;
+                updateStars();
+            });
+            star.addEventListener('mouseenter', function() { highlightStars(parseInt(this.dataset.rating)); });
+        });
+        starContainer.addEventListener('mouseleave', function() { updateStars(); });
+        
+        function highlightStars(rating) {
+            stars.forEach(function(star) { star.classList.toggle('active', parseInt(star.dataset.rating) <= rating); });
+        }
+        function updateStars() { highlightStars(selectedRating); }
+        function resetForm() {
+            feedbackForm.reset();
+            selectedRating = 0;
+            ratingInput.value = '';
+            updateStars();
+            feedbackSubmitBtn.classList.remove('loading');
+            feedbackSubmitBtn.disabled = false;
+        }
+        function showToast(message, isSuccess) {
+            feedbackToast.textContent = message;
+            feedbackToast.className = 'feedback-toast show ' + (isSuccess ? 'success' : 'error');
+            setTimeout(function() { feedbackToast.classList.remove('show'); }, 4000);
+        }
+        
+        feedbackForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const rating = parseInt(ratingInput.value);
+            const category = document.getElementById('categorySelect').value;
+            const message = document.getElementById('messageInput').value.trim();
+            
+            if (!rating || rating < 1 || rating > 5) { showToast('Please select a star rating', false); return; }
+            if (!message) { showToast('Please enter your feedback message', false); return; }
+            
+            feedbackSubmitBtn.classList.add('loading');
+            feedbackSubmitBtn.disabled = true;
+            
+            fetch('{% url "auto:submit_feedback" %}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+                body: JSON.stringify({ rating: rating, category: category, message: message, page_url: window.location.href })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) { showToast(data.message || 'Thank you!', true); closeModal(); }
+                else { showToast(data.error || 'Failed', false); feedbackSubmitBtn.classList.remove('loading'); feedbackSubmitBtn.disabled = false; }
+            })
+            .catch(function() { showToast('Failed. Please try again.', false); feedbackSubmitBtn.classList.remove('loading'); feedbackSubmitBtn.disabled = false; });
+        });
+    })();
+    </script>
+    {% endif %}
+    
     {% block extra_js %}{% endblock %}
 </body>
 </html>

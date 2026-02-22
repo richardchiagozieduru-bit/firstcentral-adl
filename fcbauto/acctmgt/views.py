@@ -25,6 +25,14 @@ class CustomLoginView(LoginView):
         return context
     
     def get_success_url(self):
+        # Multi-subscriber users don't need binding - go directly to upload page
+        if self.request.user.groups.filter(name='multi_subscriber').exists():
+            messages.success(
+                self.request,
+                'Welcome! You can upload files for any subscriber.'
+            )
+            return reverse_lazy('auto:upload')
+        
         # Check if user is already bound to a subscriber
         user_profile = UserProfile.get_or_create_profile(self.request.user)
         
@@ -104,6 +112,14 @@ class SubscriberSelectionView(LoginRequiredMixin, FormView):
     success_url = reverse_lazy('auto:dashboard')
     
     def dispatch(self, request, *args, **kwargs):
+        # Multi-subscriber users don't need binding - redirect them to upload page
+        if request.user.groups.filter(name='multi_subscriber').exists():
+            messages.info(
+                request,
+                'As a multi-subscriber user, you can select a subscriber on the upload page.'
+            )
+            return redirect('auto:upload')
+        
         # Check if user is already bound to a subscriber
         user_profile = UserProfile.get_or_create_profile(request.user)
         

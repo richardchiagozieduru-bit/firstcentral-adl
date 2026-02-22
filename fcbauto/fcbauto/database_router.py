@@ -15,7 +15,8 @@ class SubscriberDatabaseRouter:
     """
     
     # Models that should use the MSSQL subscribers database
-    subscriber_models = {'subscriber', 'subscribertoken'}
+    # Note: SubscriberToken stays in default (SQLite) because it has ForeignKey to User
+    subscriber_models = {'subscriber'}
     
     def db_for_read(self, model, **hints):
         """

@@ -41,6 +41,41 @@ class Subscriber(models.Model):
             return None
 
 
+class SubscriberEmail(models.Model):
+    """
+    Stores subscriber contact emails locally.
+    Separate from Subscriber model since that is an unmanaged external MSSQL table.
+    """
+    subscriber_id = models.IntegerField(
+        unique=True,
+        help_text="Reference to subscriber ID from external table",
+        db_index=True
+    )
+    email = models.EmailField(help_text="Subscriber contact email for reports")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'subscriber_emails'
+        verbose_name = 'Subscriber Email'
+        verbose_name_plural = 'Subscriber Emails'
+
+    def __str__(self):
+        try:
+            subscriber = Subscriber.objects.get(subscriber_id=self.subscriber_id)
+            return f"{subscriber.subscriber_name} - {self.email}"
+        except Subscriber.DoesNotExist:
+            return f"Subscriber {self.subscriber_id} - {self.email}"
+
+    @classmethod
+    def get_email(cls, subscriber_id):
+        """Get email for a subscriber, returns None if not set."""
+        try:
+            return cls.objects.get(subscriber_id=subscriber_id).email
+        except cls.DoesNotExist:
+            return None
+
+
 class SubscriberToken(models.Model):
     """
     Model to manage secure tokens for subscriber access.
@@ -114,7 +149,7 @@ class SubscriberToken(models.Model):
             subscriber = self.get_subscriber()
             subscriber_name = subscriber.subscriber_name if subscriber else f"ID:{self.subscriber_id}"
             return f"Token for {subscriber_name} ({'Active' if self.is_active else 'Inactive'})"
-        except:
+        except Exception:
             return f"Token for Subscriber ID:{self.subscriber_id} ({'Active' if self.is_active else 'Inactive'})"
     
     def get_subscriber(self):
@@ -461,6 +496,7 @@ class UploadSession(models.Model):
         ('finalizing', 'Finalizing'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
     ]
     
     STAGE_CHOICES = [
@@ -517,6 +553,8 @@ class UploadSession(models.Model):
     individual_credit_matched = models.PositiveIntegerField(default=0, help_text="Number of individual records with credit matches")
     corporate_credit_matched = models.PositiveIntegerField(default=0, help_text="Number of corporate records with credit matches")
     unmatched_credit_records = models.PositiveIntegerField(default=0, help_text="Number of credit records that could not be matched to any borrower")
+    excluded_individual_records = models.PositiveIntegerField(default=0, help_text="Number of individual records excluded during processing")
+    excluded_corporate_records = models.PositiveIntegerField(default=0, help_text="Number of corporate records excluded during processing")
     processing_time = models.FloatField(null=True, blank=True, help_text="Processing time in seconds")
     
     # Verification tracking fields
@@ -536,6 +574,10 @@ class UploadSession(models.Model):
         null=True, 
         blank=True,
         help_text="Timestamp when human verification was completed"
+    )
+    verification_skipped = models.BooleanField(
+        default=False,
+        help_text="Whether verification was auto-skipped due to no candidates"
     )
     
     # Timestamps
@@ -705,6 +747,24 @@ class UploadSession(models.Model):
             'progress_percentage', 'current_message'
         ])
     
+    def mark_verification_skipped(self):
+        """Mark that verification was auto-skipped (no candidates found)"""
+        self.verification_skipped = True
+        self.verification_completed_at = timezone.now()
+        self.status = 'finalizing'
+        self.processing_stage = 'post_verification'
+        self.progress_percentage = 85
+        self.has_verification_candidates = False
+        self.commercial_candidates_count = 0
+        self.consumer_candidates_count = 0
+        self.current_message = 'No verification candidates found, proceeding automatically'
+        self.add_activity_log('Verification auto-skipped: no consumer/commercial candidates detected')
+        self.save(update_fields=[
+            'verification_skipped', 'verification_completed_at', 'status', 
+            'processing_stage', 'progress_percentage', 'has_verification_candidates',
+            'commercial_candidates_count', 'consumer_candidates_count', 'current_message'
+        ])
+    
     def mark_completed(self, individual_count=0, corporate_count=0, processing_time=None):
         """Mark the upload as completed with metrics"""
         self.status = 'completed'
@@ -714,8 +774,15 @@ class UploadSession(models.Model):
         self.individual_records = individual_count
         self.corporate_records = corporate_count
         self.total_records = individual_count + corporate_count
+        
+        # Auto-calculate processing_time if not provided
         if processing_time:
             self.processing_time = processing_time
+        elif self.processing_started_at:
+            # Calculate from processing start to now
+            duration = self.completed_at - self.processing_started_at
+            self.processing_time = duration.total_seconds()
+        
         self.current_message = 'Processing completed successfully'
         self.add_activity_log(f'Completed: {self.total_records} total records processed')
         self.save(update_fields=[
@@ -725,15 +792,34 @@ class UploadSession(models.Model):
         ])
     
     def mark_failed(self, error_message=None):
-        """Mark the upload as failed"""
+        """Mark the upload as failed with user-friendly error message"""
         self.status = 'failed'
         self.progress_percentage = 0
         self.completed_at = timezone.now()
         if error_message:
+            # Store the original technical error
             self.error_message = error_message
-            self.current_message = f'Processing failed: {error_message[:200]}'
+            
+            # Generate user-friendly message for display
+            try:
+                from .error_messages import get_friendly_error
+                friendly = get_friendly_error(error_message)
+                self.current_message = f"{friendly['title']}: {friendly['message'][:150]}"
+            except ImportError:
+                # Fallback if error_messages module not available
+                self.current_message = f'Processing failed: {error_message[:200]}'
+            
             self.add_activity_log(f'ERROR: {error_message[:200]}')
         self.save(update_fields=['status', 'progress_percentage', 'completed_at', 'error_message', 'current_message'])
+    
+    def mark_cancelled(self, reason='Cancelled by user'):
+        """Mark the upload as cancelled by user"""
+        self.status = 'cancelled'
+        self.progress_percentage = 0
+        self.completed_at = timezone.now()
+        self.current_message = reason
+        self.add_activity_log(f'CANCELLED: {reason}')
+        self.save(update_fields=['status', 'progress_percentage', 'completed_at', 'current_message'])
     
     @classmethod
     def get_user_stats(cls, user, days=None):
@@ -768,3 +854,70 @@ class UploadSession(models.Model):
     def get_recent_uploads(cls, user, limit=10):
         """Get recent uploads for a user"""
         return cls.objects.filter(user=user).order_by('-uploaded_at')[:limit]
+
+
+class Feedback(models.Model):
+    """
+    Model to store user feedback submitted via the in-app feedback modal.
+    Allows users to rate their experience, categorize feedback, and provide details.
+    """
+    CATEGORY_CHOICES = [
+        ('bug', 'Bug Report'),
+        ('feature', 'Feature Request'),
+        ('general', 'General Feedback'),
+    ]
+    
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='feedback_submissions',
+        help_text="User who submitted the feedback (if authenticated)"
+    )
+    rating = models.IntegerField(
+        help_text="User satisfaction rating (1-5 stars)"
+    )
+    category = models.CharField(
+        max_length=20,
+        choices=CATEGORY_CHOICES,
+        default='general',
+        help_text="Type of feedback"
+    )
+    message = models.TextField(
+        help_text="Detailed feedback message from user"
+    )
+    page_url = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="URL of page where feedback was submitted"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    # Optional: track if feedback has been reviewed/addressed
+    is_reviewed = models.BooleanField(default=False)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, help_text="Internal notes from admin review")
+    
+    class Meta:
+        db_table = 'user_feedback'
+        verbose_name = 'User Feedback'
+        verbose_name_plural = 'User Feedback'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['category', 'created_at']),
+            models.Index(fields=['rating', 'created_at']),
+            models.Index(fields=['is_reviewed', 'created_at']),
+        ]
+    
+    def __str__(self):
+        username = self.user.username if self.user else 'Anonymous'
+        return f"{self.get_category_display()} from {username} - {self.rating}★ ({self.created_at.strftime('%Y-%m-%d')})"
+    
+    def mark_reviewed(self, notes=''):
+        """Mark feedback as reviewed with optional notes"""
+        self.is_reviewed = True
+        self.reviewed_at = timezone.now()
+        if notes:
+            self.admin_notes = notes
+        self.save(update_fields=['is_reviewed', 'reviewed_at', 'admin_notes'])

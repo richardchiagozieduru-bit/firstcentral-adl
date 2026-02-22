@@ -4,6 +4,11 @@
 {% block title %}Data Processing Suite{% endblock %}
 
 {% block extra_css %}
+<!-- Select2 CSS for searchable dropdowns -->
+{% if is_multi_subscriber %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet" />
+{% endif %}
 <style>
   .content-wrapper {
     max-width: 900px;
@@ -236,23 +241,135 @@
   .btn-pdf-export { background-color: #dc3545; color: white; border: 1px solid #dc3545; font-weight: 500; padding: 0.6rem 1.5rem; border-radius: 6px; text-decoration: none; transition: all 0.3s ease; }
   .btn-pdf-export:hover { background-color: #c82333; border-color: #bd2130; color: white; text-decoration: none; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(220, 53, 69, 0.3); }
   
+  /* Collapsible Help Section Styles */
+  .help-section {
+    margin-bottom: 1.5rem;
+    border-radius: 8px;
+    overflow: hidden;
+    animation: slideIn 0.5s ease-out, pulseGlow 2s ease-in-out 0.5s 5;
+  }
+  
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  @keyframes pulseGlow {
+    0%, 100% {
+      box-shadow: 0 0 5px rgba(230, 126, 34, 0.4);
+    }
+    50% {
+      box-shadow: 0 0 25px rgba(230, 126, 34, 0.8), 0 0 40px rgba(230, 126, 34, 0.5);
+    }
+  }
+  
+  .help-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid #d0d5dd;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    color: #344054;
+    transition: all 0.2s ease;
+  }
+  
+  .help-toggle:hover {
+    background: rgba(255, 255, 255, 0.9);
+  }
+  
+  .help-toggle i.fa-chevron-down {
+    transition: transform 0.3s ease;
+  }
+  
+  .help-toggle.active i.fa-chevron-down {
+    transform: rotate(180deg);
+  }
+  
+  .help-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid #d0d5dd;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+  }
+  
+  .help-content.show {
+    max-height: 400px;
+  }
+  
+  .help-content-inner {
+    padding: 1rem;
+  }
+  
+  .help-content ul {
+    margin: 0;
+    padding-left: 1.5rem;
+    text-align: left;
+  }
+  
+  .help-content li {
+    color: #495057;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  
+  .help-content li i {
+    color: #0d6efd;
+    margin-right: 0.5rem;
+  }
+
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="content-wrapper">
+    
+    <!-- File Requirements Guide - At the very top -->
+    {% if current_view == 'upload' and not error_message %}
+    <div class="help-section">
+        <div class="help-toggle" id="helpToggle">
+            <span><i class="fas fa-info-circle me-2"></i>📋 File Requirements Guide - Click to Expand</span>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="help-content" id="helpContent">
+            <div class="help-content-inner">
+                <ul>
+                    <li><i class="fas fa-check-circle"></i><strong>Single Workbook:</strong> Upload an Excel file (.xlsx, .xls, .xlsb, .xlsm) containing all required sheets in one workbook.</li>
+                    <li><i class="fas fa-check-circle"></i><strong>Required Sheets:</strong> Individual Borrower Template or Corporate Borrower Template, Credit Information (at minimum).</li>
+                    <li><i class="fas fa-check-circle"></i><strong>Optional Sheets:</strong> Principal Officers, Guarantors Information.</li>
+                    <li><i class="fas fa-check-circle"></i><strong>Key Columns:</strong> Each sheet must have Customer ID. Credit Info needs Account Number. Individual Borrowers need BVN or NIN.</li>
+                    <li><i class="fas fa-lightbulb"></i><strong>Tip:</strong> Use consistent Customer IDs across sheets to ensure proper data merging.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
     <div class="tabs">
         <a href="{% url 'auto:upload' %}?view=upload" class="tab-link {% if current_view == 'results' %}inactive{% endif %}" id="upload-tab"><i class="fas fa-upload"></i> Upload File</a>
         <a href="{% url 'auto:upload' %}?view=results" class="tab-link {% if current_view == 'upload' %}inactive{% endif %}" id="results-tab" {% if not has_results %}style="opacity: 0.5; pointer-events: none;"{% endif %}><i class="fas fa-poll"></i> View Results</a>
     </div>
 
     {% if current_view == 'upload' and not error_message %}
+    
     <div class="upload-container">
-        <div class="file-upload-icon-wrapper">
+        {% comment %} <div class="file-upload-icon-wrapper">
             <i class="fas fa-file-alt file-upload-icon"></i>
         </div>
         <h2>Excel File Upload</h2>
-        <p>Upload your Excel file to process borrower data</p>
+        <p>Upload your Excel file to process borrower data</p> {% endcomment %}
         <form id="uploadForm" method="post" enctype="multipart/form-data">
             {% csrf_token %}
             {{ form.non_field_errors }}
@@ -274,12 +391,27 @@
                 </select>
             </div>
             
+            <!-- Subscriber Selection Section (only for multi_subscriber users) -->
+            {% if is_multi_subscriber %}
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #e9ecef; margin-bottom: 1.5rem;">
+                <label style="color: #6c757d; font-size: 0.875rem; font-weight: 500; margin: 0; white-space: nowrap;">
+                    <i class="fas fa-building me-1" style="font-size: 0.75rem;"></i>Subscriber
+                </label>
+                <select name="subscriber_id" id="id_subscriber" class="form-select" style="flex: 1; font-size: 0.875rem; padding: 6px 12px;" required>
+                    <option value="">Select a subscriber...</option>
+                    {% for sub in subscribers %}
+                        <option value="{{ sub.subscriber_id }}">{{ sub.subscriber_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            
             <!-- File Upload Section -->
             <div class="drag-drop-area" onclick="document.getElementById('id_file').click()">
                 <div id="upload-prompt">
                     <div class="drag-drop-icon"><i class="fas fa-cloud-upload-alt"></i></div>
-                    <div class="file-upload-text"><strong>Choose File</strong> or drag and drop</div>
-                    <div class="file-upload-hint">Excel files only (.xlsx, .xls)</div>
+                    <div class="file-upload-text"><strong>Choose Files</strong> or drag and drop</div>
+                    <div class="file-upload-hint">Excel files only (.xlsx, .xls, .xlsb, .xlsm) - multiple files supported</div>
                 </div>
                 <div id="file-display-area">
                     <div class="fa-stack fa-2x">
@@ -287,13 +419,14 @@
                         <i class="fas fa-check fa-stack-1x" style="color: #198754; margin-left: 1.5em; margin-top: 0.8em; font-size: 0.6em;"></i>
                     </div>
                     <span id="file-name-text" class="mt-2"></span>
+                    <div id="file-list-container" style="text-align: left; font-size: 0.85rem; color: #495057; max-height: 100px; overflow-y: auto; width: 100%; margin-top: 0.5rem;"></div>
                 </div>
-                <input type="file" name="file" id="id_file" accept=".xlsx,.xls">
+                <input type="file" name="file" id="id_file" accept=".xlsx,.xls,.xlsb,.xlsm" multiple>
             </div>
 
             <button type="submit" class="btn btn-upload-file" id="uploadButton">
                 <span class="button-content">
-                    <i class="fas fa-upload me-2"></i>Upload File
+                    <i class="fas fa-upload me-2"></i>Upload Files
                 </span>
                 <span class="spinner-border" role="status">
                     <span class="visually-hidden">Loading...</span>
@@ -341,23 +474,43 @@
             <span><strong>File processed and Uploaded Successfully!</strong></span>
         </div>
 
-         <div class="stat-card-row">
-            <div class="stat-card">
+         <div class="stat-card-row" style="justify-content: center;">
+            {% if total_individual > 0 %}
+            <div class="stat-card" {% if total_corporate == 0 %}style="max-width: 400px;"{% endif %}>
                 <div class="icon individual"><i class="fas fa-user"></i></div>
                 <div>
                     <div class="label">Individual Borrowers</div>
                     <div class="count">{{ total_individual|default:"0" }}</div>
                     <div class="status"><i class="fas fa-check"></i> Processed successfully</div>
+                    {% if excluded_individual and excluded_individual > 0 %}
+                    <div class="status" style="color: #dc3545;"><i class="fas fa-times"></i> {{ excluded_individual }} excluded records</div>
+                    {% endif %}
+                    {% if is_multi_subscriber and upload_session.individual_file_path %}
+                    <a href="{{ upload_session.individual_file_path }}" class="btn btn-primary mt-2" style="font-weight: 600;" download>
+                        <i class="fas fa-download me-1"></i>Download
+                    </a>
+                    {% endif %}
                 </div>
             </div>
-            <div class="stat-card">
+            {% endif %}
+            {% if total_corporate > 0 %}
+            <div class="stat-card" {% if total_individual == 0 %}style="max-width: 400px;"{% endif %}>
                 <div class="icon corporate"><i class="fas fa-building"></i></div>
                 <div>
                     <div class="label">Corporate Borrowers</div>
                     <div class="count">{{ total_corporate|default:"0" }}</div>
                     <div class="status"><i class="fas fa-check"></i> Processed successfully</div>
+                    {% if excluded_corporate and excluded_corporate > 0 %}
+                    <div class="status" style="color: #dc3545;"><i class="fas fa-times"></i> {{ excluded_corporate }} excluded records</div>
+                    {% endif %}
+                    {% if is_multi_subscriber and upload_session.corporate_file_path %}
+                    <a href="{{ upload_session.corporate_file_path }}" class="btn btn-warning mt-2" style="font-weight: 600;" download>
+                        <i class="fas fa-download me-1"></i>Download
+                    </a>
+                    {% endif %}
                 </div>
             </div>
+            {% endif %}
         </div>
         
         <div class="processing-details mt-4">
@@ -414,23 +567,63 @@
 
 </div>
 
+<!-- Select2 JS for searchable dropdowns -->
+{% if is_multi_subscriber %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+$(document).ready(function() {
+    $('#id_subscriber').select2({
+        theme: 'bootstrap-5',
+        placeholder: 'Search subscriber...',
+        allowClear: true,
+        width: '100%'
+    });
+});
+</script>
+{% endif %}
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const fileInput = document.getElementById('id_file');
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
     const dragDropArea = document.querySelector('.drag-drop-area');
+    
+    // Help section accordion toggle
+    const helpToggle = document.getElementById('helpToggle');
+    const helpContent = document.getElementById('helpContent');
+    if (helpToggle && helpContent) {
+        helpToggle.addEventListener('click', function() {
+            helpToggle.classList.toggle('active');
+            helpContent.classList.toggle('show');
+        });
+    }
 
     if (fileInput) {
         const updateFileDisplay = () => {
             const uploadPrompt = document.getElementById('upload-prompt');
             const fileDisplayArea = document.getElementById('file-display-area');
             const fileNameText = document.getElementById('file-name-text');
+            const fileListContainer = document.getElementById('file-list-container');
 
             if (fileInput.files && fileInput.files.length > 0) {
                 uploadPrompt.style.display = 'none';
-                fileNameText.textContent = fileInput.files[0].name;
                 fileDisplayArea.style.display = 'flex';
+                
+                const fileCount = fileInput.files.length;
+                if (fileCount === 1) {
+                    fileNameText.textContent = fileInput.files[0].name;
+                    fileListContainer.innerHTML = '';
+                } else {
+                    fileNameText.textContent = `${fileCount} files selected`;
+                    // Build file list
+                    let listHtml = '<ul style="list-style: none; padding: 0; margin: 0;">';
+                    for (let i = 0; i < fileCount; i++) {
+                        listHtml += `<li><i class="fas fa-file-excel me-1" style="color: #198754;"></i>${fileInput.files[i].name}</li>`;
+                    }
+                    listHtml += '</ul>';
+                    fileListContainer.innerHTML = listHtml;
+                }
             } else {
                 uploadPrompt.style.display = 'flex';
                 fileDisplayArea.style.display = 'none';

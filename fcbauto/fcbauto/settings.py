@@ -91,20 +91,14 @@ WSGI_APPLICATION = 'fcbauto.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
-# Multiple database configuration
+# Single MSSQL database configuration
 DATABASES = {
-    # SQLite for Django internal operations (users, sessions, upload tracking, Q tasks)
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    },
-    # MSSQL for external Subscribers lookup (read-only)
-    'subscribers_db': {
         'ENGINE': 'mssql',
         'NAME': config('DB_SUBSCRIBERS_NAME', default='Subscribers'),
-        'HOST': config('DB_SUBSCRIBERS_HOST', default='IT-FAITHO\\SQLEXPRESS'),
-        'USER': config('DB_SUBSCRIBERS_USER', default='r'),
-        'PASSWORD': config('DB_SUBSCRIBERS_PASSWORD', default='1'),
+        'HOST': config('DB_SUBSCRIBERS_HOST', default='O2JUNE\\SQLEXPRESS'),
+        'USER': config('DB_SUBSCRIBERS_USER', default=''),
+        'PASSWORD': config('DB_SUBSCRIBERS_PASSWORD', default=''),
         'PORT': config('DB_SUBSCRIBERS_PORT', default=''),
         'OPTIONS': {
             'driver': 'ODBC Driver 17 for SQL Server',
@@ -115,8 +109,8 @@ DATABASES = {
     }
 }
 
-# Database router to direct Subscriber model queries to MSSQL
-DATABASE_ROUTERS = ['fcbauto.database_router.SubscriberDatabaseRouter']
+# No database router needed - all models use the default MSSQL database
+# DATABASE_ROUTERS = []
 
 
 # Password validation
@@ -192,3 +186,97 @@ Q_CLUSTER = {
 }
 
 
+# Logging Configuration
+# Logs appear in terminal AND are saved to logs/app.log
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+            'stream': 'ext://sys.stdout',
+        },
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'app.log'),
+            'maxBytes': 5 * 1024 * 1024,  # 5 MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+    },
+    'loggers': {
+        'auto': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'acctmgt': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'WARNING',
+    },
+}
+
+
+# =============================================================================
+# CACHING CONFIGURATION
+# Required for rate limiting functionality
+# =============================================================================
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'fcbauto-rate-limit-cache',
+    }
+}
+
+
+# =============================================================================
+# RATE LIMITING CONFIGURATION
+# Protects against abuse and ensures fair resource allocation
+# =============================================================================
+RATELIMIT_USE_CACHE = 'default'
+RATELIMIT_ENABLE = True
+
+
+# =============================================================================
+# EMAIL CONFIGURATION
+# For feedback notifications and other email functionality
+# =============================================================================
+# Email recipient for feedback notifications
+FEEDBACK_EMAIL_RECIPIENT = config('FEEDBACK_EMAIL_RECIPIENT', default='richardchiagozieduru@gmail.com')
+
+# Email backend configuration
+# In DEBUG mode, emails are printed to console instead of sent
+if DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.SMTPBackend'
+    EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+    EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+    EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+    EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+    EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@firstcentral.com')

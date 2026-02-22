@@ -8,7 +8,7 @@ from django.http import HttpResponse
 from django.template.response import TemplateResponse
 from django.shortcuts import render
 from django import forms
-from .models import Subscriber, SubscriberToken, UserSubscriberPermission
+from .models import Subscriber, SubscriberToken, UserSubscriberPermission, Feedback, SubscriberEmail
 
 
 class SubscriberMultipleChoiceField(forms.ModelMultipleChoiceField):
@@ -136,6 +136,21 @@ class SubscriberAdmin(admin.ModelAdmin):
     
     def has_change_permission(self, request, obj=None):
         return False  # External table, no editing
+
+
+@admin.register(SubscriberEmail)
+class SubscriberEmailAdmin(admin.ModelAdmin):
+    list_display = ('subscriber_id', 'subscriber_name_display', 'email', 'updated_at')
+    search_fields = ('subscriber_id', 'email')
+    ordering = ('subscriber_id',)
+
+    def subscriber_name_display(self, obj):
+        try:
+            subscriber = Subscriber.objects.get(subscriber_id=obj.subscriber_id)
+            return subscriber.subscriber_name
+        except Subscriber.DoesNotExist:
+            return f"ID: {obj.subscriber_id} (Not Found)"
+    subscriber_name_display.short_description = 'Subscriber Name'
 
 
 @admin.register(SubscriberToken)
@@ -331,3 +346,52 @@ class UserSubscriberPermissionAdmin(admin.ModelAdmin):
         if not change and not obj.granted_by:
             obj.granted_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(Feedback)
+class FeedbackAdmin(admin.ModelAdmin):
+    """
+    Admin interface for viewing and managing user feedback
+    """
+    list_display = (
+        'created_at', 'rating_display', 'category', 'user', 
+        'message_preview', 'is_reviewed'
+    )
+    list_filter = ('category', 'rating', 'is_reviewed', 'created_at')
+    search_fields = ('message', 'user__username', 'user__email')
+    ordering = ('-created_at',)
+    date_hierarchy = 'created_at'
+    readonly_fields = ('user', 'rating', 'category', 'message', 'page_url', 'created_at')
+    actions = ['mark_as_reviewed']
+    
+    fieldsets = (
+        ('Feedback Details', {
+            'fields': ('user', 'rating', 'category', 'message', 'page_url', 'created_at')
+        }),
+        ('Admin Review', {
+            'fields': ('is_reviewed', 'reviewed_at', 'admin_notes'),
+        })
+    )
+    
+    def rating_display(self, obj):
+        """Display rating as stars"""
+        return '★' * obj.rating + '☆' * (5 - obj.rating)
+    rating_display.short_description = 'Rating'
+    
+    def message_preview(self, obj):
+        """Display truncated message"""
+        return obj.message[:50] + '...' if len(obj.message) > 50 else obj.message
+    message_preview.short_description = 'Message'
+    
+    def mark_as_reviewed(self, request, queryset):
+        """Mark selected feedback as reviewed"""
+        from django.utils import timezone
+        updated = queryset.update(is_reviewed=True, reviewed_at=timezone.now())
+        messages.success(request, f'Marked {updated} feedback entries as reviewed.')
+    mark_as_reviewed.short_description = "Mark selected as reviewed"
+    
+    def has_add_permission(self, request):
+        return False  # Feedback is submitted by users, not created in admin
+    
+    def has_delete_permission(self, request, obj=None):
+        return True  # Allow deletion for cleanup

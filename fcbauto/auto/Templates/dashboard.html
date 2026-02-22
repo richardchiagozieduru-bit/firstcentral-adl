@@ -900,6 +900,46 @@
   font-size: 0.875rem;
 }
 
+/* Cancel button styles */
+.btn-cancel {
+  background: #ffc107;
+  color: #212529;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+}
+
+.btn-cancel:hover {
+  background: #e0a800;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(255, 193, 7, 0.3);
+}
+
+.btn-cancel:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+}
+
+/* Status badge for cancelled */
+.status-cancelled {
+  background: #6c757d;
+  color: white;
+}
+
+/* Status badge for awaiting_verification */
+.status-awaiting_verification {
+  background: #17a2b8;
+  color: white;
+}
+
 /* Notification styles */
 .notification {
   position: fixed;
@@ -1155,8 +1195,14 @@
                                         <i class="fas fa-spinner fa-spin"></i>
                                     {% elif upload.status == 'pending' %}
                                         <i class="fas fa-clock"></i>
-                                    {% else %}
+                                    {% elif upload.status == 'awaiting_verification' %}
+                                        <i class="fas fa-user-check"></i>
+                                    {% elif upload.status == 'cancelled' %}
+                                        <i class="fas fa-ban"></i>
+                                    {% elif upload.status == 'failed' %}
                                         <i class="fas fa-times"></i>
+                                    {% else %}
+                                        <i class="fas fa-question"></i>
                                     {% endif %}
                                     {{ upload.get_status_display }}
                                 </span>
@@ -1168,6 +1214,11 @@
                                         <br>
                                         <small class="text-muted">
                                             {{ upload.individual_records }} individual, {{ upload.corporate_records }} corporate
+                                            {% with total_excluded=upload.excluded_individual_records|default:0|add:upload.excluded_corporate_records|default:0 %}
+                                                {% if total_excluded > 0 %}
+                                                    <br><span style="color: #dc3545;">{{ total_excluded }} excluded records</span>
+                                                {% endif %}
+                                            {% endwith %}
                                             {% if upload.unmatched_credit_records > 0 %}
                                                 <br><span style="color: #dc3545;">{{ upload.unmatched_credit_records }} unmatched credit</span>
                                             {% endif %}
@@ -1185,12 +1236,22 @@
                                 {% endif %}
                             </td>
                             <td>
-                                <button class="btn-delete" 
-                                        data-upload-id="{{ upload.id }}" 
-                                        data-filename="{{ upload.original_filename }}"
-                                        title="Delete upload">
-                                    <i class="fas fa-trash"></i>
-                                </button>
+                                <div style="display: flex; gap: 4px;">
+                                    {% if upload.status not in 'completed,cancelled' %}
+                                    <button class="btn-cancel" 
+                                            data-upload-id="{{ upload.id }}" 
+                                            data-filename="{{ upload.original_filename }}"
+                                            title="Cancel upload">
+                                        <i class="fas fa-times-circle"></i>
+                                    </button>
+                                    {% endif %}
+                                    <button class="btn-delete" 
+                                            data-upload-id="{{ upload.id }}" 
+                                            data-filename="{{ upload.original_filename }}"
+                                            title="Delete upload">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                         {% endfor %}
@@ -1305,6 +1366,10 @@ function updateUploadsTable(uploads) {
                         <br>
                         <small class="text-muted">
                             ${upload.individual_records} individual, ${upload.corporate_records} corporate
+                            ${((upload.excluded_individual_records || 0) + (upload.excluded_corporate_records || 0)) > 0 ? 
+                                `<br><span style="color: #dc3545;">${(upload.excluded_individual_records || 0) + (upload.excluded_corporate_records || 0)} excluded records</span>` : ''}
+                            ${upload.unmatched_credit_records > 0 ? 
+                                `<br><span style="color: #dc3545;">${upload.unmatched_credit_records} unmatched credit</span>` : ''}
                         </small>
                     </div>
                 ` : '<span class="text-muted">-</span>'}
@@ -1614,8 +1679,61 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.error('[Dashboard] Missing upload ID or filename');
             }
         }
+        
+        // Handle cancel button clicks
+        const cancelBtn = e.target.closest('.btn-cancel');
+        if (cancelBtn) {
+            console.log('[Dashboard] Cancel button clicked');
+            const uploadId = cancelBtn.getAttribute('data-upload-id');
+            const filename = cancelBtn.getAttribute('data-filename');
+            
+            if (uploadId && filename) {
+                cancelUpload(uploadId, filename, cancelBtn);
+            }
+        }
     });
 });
+
+// Cancel upload function
+function cancelUpload(uploadId, filename, btn) {
+    if (!confirm(`Cancel upload "${filename}"?\n\nThis will stop processing and mark the upload as cancelled.`)) {
+        return;
+    }
+    
+    const originalContent = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    btn.disabled = true;
+    
+    const csrfToken = getCookie('csrftoken');
+    const cancelUrl = `{% url 'auto:cancel_upload' 0 %}`.replace('0', uploadId);
+    
+    fetch(cancelUrl, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': csrfToken,
+            'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(`Upload "${filename}" has been cancelled`, 'success');
+            // Refresh dashboard to update status
+            refreshDashboard();
+        } else {
+            showNotification(data.error || 'Failed to cancel upload', 'error');
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Error cancelling upload:', error);
+        showNotification('An error occurred while cancelling the upload', 'error');
+        btn.innerHTML = originalContent;
+        btn.disabled = false;
+    });
+}
 
 // Load engagement metrics on page load
 document.addEventListener('DOMContentLoaded', loadEngagementMetrics);

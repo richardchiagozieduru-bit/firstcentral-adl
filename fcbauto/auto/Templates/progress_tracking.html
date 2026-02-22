@@ -30,6 +30,32 @@
                         </div>
                     </div>
                     
+                    {% if upload_session.status == 'failed' and 'Validation Failed' in upload_session.error_message %}
+                    <!-- Current Status Hidden for Validation Errors -->
+                    {% else %}
+                    <div id="status-section" class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong>Current Status:</strong>
+                            <span id="status-badge" class="badge fs-6 bg-secondary">
+                                {{ upload_session.get_status_display }}
+                            </span>
+                        </div>
+                        
+                        <div class="progress mb-3" style="height: 8px;">
+                            <div id="progress-bar" class="progress-bar progress-bar-striped" role="progressbar" 
+                                 data-progress="{{ upload_session.progress_percentage }}"
+                                 aria-valuenow="{{ upload_session.progress_percentage }}" 
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <small class="text-muted" id="current-message">{{ upload_session.current_message|default:"Preparing..." }}</small>
+                            <small id="progress-text" class="text-muted">{{ upload_session.progress_percentage }}%</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
                     <!-- Processing Timeline -->
                     <div class="mb-4">
                         <h5 class="mb-3">Processing Timeline</h5>
@@ -87,6 +113,47 @@
                                             • <span id="consumer-count">0</span> potential consumer entities in commercial records
                                         </small>
                                     </div>
+                                    <div id="verification-skipped-info" class="mt-2" style="display:none;">
+                                        <small class="text-success">
+                                            <i class="fas fa-check-circle me-1"></i>Auto-skipped: No candidates requiring review
+                                        </small>
+                                    </div>
+                                    
+                                    <!-- Inline Verification Card -->
+                                    <div id="inline-verification-section" class="mt-3" style="{% if upload_session.status == 'awaiting_verification' %}display:block;{% else %}display:none;{% endif %}">
+                                        <div class="card border-warning">
+                                            <div class="card-header bg-warning bg-opacity-10 py-2">
+                                                <h6 class="mb-0 text-warning">
+                                                    <i class="fas fa-exclamation-triangle me-2"></i>
+                                                    Human Verification Required
+                                                </h6>
+                                            </div>
+                                            <div class="card-body py-3">
+                                                <div class="alert alert-info border-0 mb-3 py-2">
+                                                    <div class="d-flex align-items-start">
+                                                        <i class="fas fa-info-circle me-2 mt-1 text-info"></i>
+                                                        <div>
+                                                            <strong>Split Decision Review Needed:</strong>
+                                                            <ul class="mt-2 mb-0 ps-3">
+                                                                <li><strong id="verification-commercial-count">{{ upload_session.commercial_candidates_count }}</strong> potential commercial entities in consumer records</li>
+                                                                <li><strong id="verification-consumer-count">{{ upload_session.consumer_candidates_count }}</strong> potential consumer entities in commercial records</li>
+                                                            </ul>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div class="d-flex gap-2">
+                                                    <a href="{% url 'auto:verify_split_decision' %}?session_id={{ upload_session.id }}" 
+                                                       class="btn btn-warning" id="verification-btn">
+                                                        <i class="fas fa-user-check me-2"></i>Start Verification
+                                                    </a>
+                                                    <button class="btn btn-outline-secondary btn-sm" onclick="refreshStatus()">
+                                                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             
@@ -122,95 +189,14 @@
                         </div>
                     </div>
                     
-                    {% if upload_session.status == 'failed' and 'Validation Failed' in upload_session.error_message %}
-                    <!-- Current Status Hidden for Validation Errors -->
-                    {% else %}
-                    <div id="status-section" class="mb-4">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <strong>Current Status:</strong>
-                            <span id="status-badge" class="badge fs-6 bg-secondary">
-                                {{ upload_session.get_status_display }}
-                            </span>
-                        </div>
-                        
-                        <div class="progress mb-3" style="height: 8px;">
-                            <div id="progress-bar" class="progress-bar progress-bar-striped" role="progressbar" 
-                                 data-progress="{{ upload_session.progress_percentage }}"
-                                 aria-valuenow="{{ upload_session.progress_percentage }}" 
-                                 aria-valuemin="0" 
-                                 aria-valuemax="100">
-                            </div>
-                        </div>
-                        <div class="d-flex justify-content-between">
-                            <small class="text-muted" id="current-message">{{ upload_session.current_message|default:"Preparing..." }}</small>
-                            <small id="progress-text" class="text-muted">{{ upload_session.progress_percentage }}%</small>
-                        </div>
-                    </div>
-                    {% endif %}
-                    
-                    <!-- Activity Log (Hidden for validation errors) -->
-                    {% if upload_session.status == 'failed' and 'Validation Failed' in upload_session.error_message %}
-                    <!-- Activity Log Hidden for Validation Errors -->
-                    {% else %}
-                    <div id="activity-log-section" class="mb-4">
-                        <h6 class="mb-3">Activity Log <small class="text-muted">• Live Updates</small></h6>
-                        <div id="activity-log" class="activity-log-container">
-                            {% if upload_session.activity_log %}
-                                {% for entry in upload_session.activity_log %}
-                                <div class="activity-log-entry">
-                                    <span class="log-time">[{{ entry.timestamp }}]</span>
-                                    <span class="log-message">{{ entry.message }}</span>
-                                </div>
-                                {% endfor %}
-                            {% else %}
-                                <div class="activity-log-entry text-muted">
-                                    <span class="log-message">No activity logged yet...</span>
-                                </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endif %}
+
                     
                     <div id="error-section" class="alert alert-danger{% if not upload_session.error_message %} d-none{% endif %}">
                         <strong>Error:</strong>
                         <div id="error-message">{{ upload_session.error_message }}</div>
                     </div>
                     
-                    <div id="verification-section" class="{% if upload_session.status != 'awaiting_verification' %}d-none{% endif %}">
-                        <div class="card border-warning">
-                            <div class="card-header bg-warning bg-opacity-10">
-                                <h5 class="mb-0 text-warning">
-                                    <i class="fas fa-exclamation-triangle me-2"></i>
-                                    Human Verification Required
-                                </h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="alert alert-info border-0 mb-3">
-                                    <div class="d-flex align-items-start">
-                                        <i class="fas fa-info-circle me-3 mt-1 text-info"></i>
-                                        <div>
-                                            <strong>Split Decision Review Needed:</strong> The system has identified potential misclassifications between consumer and commercial borrowers that require your review.
-                                            <ul class="mt-2 mb-0">
-                                                <li><strong id="verification-commercial-count">{{ upload_session.commercial_candidates_count }}</strong> potential commercial entities found in consumer records</li>
-                                                <li><strong id="verification-consumer-count">{{ upload_session.consumer_candidates_count }}</strong> potential consumer entities found in commercial records</li>
-                                            </ul>
-                                            <small class="text-muted">Your verification ensures data accuracy for credit bureau submission.</small>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div class="d-grid gap-2 d-md-flex justify-content-md-start">
-                                    <a href="{% url 'auto:verify_split_decision' %}?session_id={{ upload_session.id }}" 
-                                       class="btn btn-warning btn-lg" id="verification-btn">
-                                        <i class="fas fa-user-check me-2"></i> Start Verification Process
-                                    </a>
-                                    <button class="btn btn-outline-secondary" onclick="refreshStatus()">
-                                        <i class="fas fa-sync-alt me-2"></i> Refresh Status
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+
                     
                     <div id="completion-section" class="{% if upload_session.status != 'completed' %}d-none{% endif %}">
                         <div class="alert alert-success text-center">
@@ -608,16 +594,29 @@ function updateStatus(data) {
     // Update timeline
     updateTimeline(data.processing_stage || data.status);
     
-    // Update activity log
-    if (data.activity_log && data.activity_log.length > 0) {
-        updateActivityLog(data.activity_log);
-    }
-    
     // Handle error messages and check for validation failure
     const errorSection = document.getElementById('error-section');
     const errorMessage = document.getElementById('error-message');
     if (data.error_message) {
-        errorMessage.textContent = data.error_message;
+        // Use friendly error if available
+        if (data.friendly_error) {
+            const fe = data.friendly_error;
+            errorMessage.innerHTML = `
+                <div class="friendly-error">
+                    <div class="error-title mb-2">
+                        <i class="fas ${fe.icon || 'fa-exclamation-circle'} me-2"></i>
+                        <strong>${fe.title}</strong>
+                    </div>
+                    <div class="error-desc mb-2">${fe.message}</div>
+                    <div class="error-fix text-muted">
+                        <i class="fas fa-lightbulb me-1"></i>
+                        <strong>Suggested Fix:</strong> ${fe.fix}
+                    </div>
+                </div>
+            `;
+        } else {
+            errorMessage.textContent = data.error_message;
+        }
         errorSection.classList.remove('d-none');
         
         // Check for validation failure and show modal (only once)
@@ -630,10 +629,19 @@ function updateStatus(data) {
         errorSection.classList.add('d-none');
     }
     
-    // Handle verification section
-    const verificationSection = document.getElementById('verification-section');
-    if (data.status === 'awaiting_verification') {
-        verificationSection.classList.remove('d-none');
+    // Handle verification section (now inline under timeline step)
+    const inlineVerificationSection = document.getElementById('inline-verification-section');
+    const verificationSkippedInfo = document.getElementById('verification-skipped-info');
+    const verificationInfo = document.getElementById('verification-info');
+    
+    if (data.verification_skipped) {
+        // Show auto-skipped indicator in timeline
+        if (inlineVerificationSection) inlineVerificationSection.style.display = 'none';
+        if (verificationSkippedInfo) verificationSkippedInfo.style.display = 'block';
+        if (verificationInfo) verificationInfo.style.display = 'none';
+    } else if (data.status === 'awaiting_verification') {
+        if (inlineVerificationSection) inlineVerificationSection.style.display = 'block';
+        if (verificationSkippedInfo) verificationSkippedInfo.style.display = 'none';
         
         // Update verification counts
         if (data.commercial_candidates_count !== undefined) {
@@ -646,9 +654,9 @@ function updateStatus(data) {
         }
         
         // Show verification info in timeline
-        document.getElementById('verification-info').style.display = 'block';
+        if (verificationInfo) verificationInfo.style.display = 'block';
     } else {
-        verificationSection.classList.add('d-none');
+        if (inlineVerificationSection) inlineVerificationSection.style.display = 'none';
     }
     
     // Handle completion section
@@ -706,20 +714,7 @@ function updateTimeline(stage) {
     });
 }
 
-function updateActivityLog(logEntries) {
-    const logContainer = document.getElementById('activity-log');
-    logContainer.innerHTML = '';
-    
-    logEntries.forEach(entry => {
-        const logEntry = document.createElement('div');
-        logEntry.className = 'activity-log-entry';
-        logEntry.innerHTML = `<span class="log-time">[${entry.timestamp}]</span><span class="log-message">${entry.message}</span>`;
-        logContainer.appendChild(logEntry);
-    });
-    
-    // Auto-scroll to bottom
-    logContainer.scrollTop = logContainer.scrollHeight;
-}
+
 
 function getStatusDisplay(status) {
     const statusMap = {
