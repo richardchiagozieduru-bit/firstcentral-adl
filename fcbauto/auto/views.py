@@ -13,7 +13,7 @@ from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from .forms import ExcelUploadForm
-from .map import consu_mapping, comm_mapping, guar_mapping, credit_mapping, prin_mapping,Gender_dict,Country_dict,state_dict,Marital_dict,Borrower_dict,Employer_dict,Title_dict,Occu_dict,AccountStatus_dict,Loan_dict,Repayment_dict,Currency_dict,Classification_dict,Collateraltype_dict,Positioninbusiness_dict,ConsuToComm,CommToConsu, commercial_keywords,consumer_merged_mapping,commercial_merged_mapping,guarantor_columns_to_clear,principal_officer_columns_to_clear,sheet_name_mappings
+from .map import consu_mapping, comm_mapping, guar_mapping, credit_mapping, prin_mapping,Gender_dict,Country_dict,state_dict,Marital_dict,Borrower_dict,Employer_dict,Title_dict,Occu_dict,AccountStatus_dict,Loan_dict,Repayment_dict,Currency_dict,Classification_dict,Collateraltype_dict,Positioninbusiness_dict,ConsuToComm,CommToConsu, commercial_keywords,consumer_merged_mapping,commercial_merged_mapping,guarantor_columns_to_clear,principal_officer_columns_to_clear,sheet_name_mappings,TIER_1_SUFFIXES,TIER_3_AMBIGUOUS
 from .filename_utils import generate_filename, generate_fallback_filename, generate_filename_from_user
 from rapidfuzz import fuzz, process
 from typing import Union, Optional
@@ -167,6 +167,63 @@ def create_empty_sheet(mapping_dict):
     """
     columns = list(mapping_dict.keys())
     return pd.DataFrame(columns=columns)
+
+
+def validate_required_sheets_present(xds, cleaned_names_override=None):
+    """
+    Validate that an uploaded workbook contains the minimum required sheets
+    before any processing begins.
+
+    Rules:
+    - If any merged sheet (consumermerged / commercialmerged) is present,
+      skip the check entirely — merged sheets are self-contained.
+    - Otherwise BOTH of the following must be present:
+        1. At least one borrower sheet:
+               IndividualBorrowerTemplate  OR  CorporateBorrowerTemplate
+        2. CreditInformation
+    - PrincipalOfficersTemplate and GuarantorsInformation are optional.
+
+    Args:
+        xds: dict of sheet-name → DataFrame (used to derive cleaned names when
+             cleaned_names_override is not provided)
+        cleaned_names_override: optional set of already-canonical sheet-type names.
+             Pass this when the xds keys are raw filenames (e.g. for CSV uploads)
+             rather than Excel sheet tab names.
+
+    Returns:
+        tuple: (is_valid: bool, error_message: str)
+    """
+    if cleaned_names_override is not None:
+        cleaned_names = set(cleaned_names_override)
+    else:
+        cleaned_names = {clean_sheet_name(name) for name in xds.keys()}
+
+    # Merged sheets bypass the check
+    if 'consumermerged' in cleaned_names or 'commercialmerged' in cleaned_names:
+        return True, ""
+
+    has_borrower = (
+        'individualborrowertemplate' in cleaned_names
+        or 'corporateborrowertemplate' in cleaned_names
+    )
+    has_credit = 'creditinformation' in cleaned_names
+
+    if has_borrower and has_credit:
+        return True, ""
+
+    missing = []
+    if not has_borrower:
+        missing.append("a Borrower sheet (Individual Borrower Template or Corporate Borrower Template)")
+    if not has_credit:
+        missing.append("Credit Information sheet")
+
+    error_message = (
+        "❌ Validation Failed - Required Sheets Are Missing.\n"
+        + "\n".join(f"- Missing: {m}" for m in missing)
+        + "\nPlease include all required sheets and re-upload your file."
+    )
+    return False, error_message
+
 
 def ensure_all_sheets_exist(xds):
     """
@@ -340,6 +397,8 @@ def preprocess_arrears_from_headers(df):
                 return ''
             
             value_str = str(value).strip()
+
+            value_str = re.sub(r'(\d)[,\s](\d)', r'\1\2', value_str)
             
             # Find all numbers in the string
             numbers = re.findall(r'\d+', value_str)
@@ -628,7 +687,7 @@ def process_dates_vectorized(df, cutoff_date=None):
     ]
     
     # Columns that need cutoff validation for MDY/DMY switching
-    cutoff_columns = ['LOANEFFECTIVEDATE', 'ACCOUNTSTATUSDATE']
+    cutoff_columns = ['LOANEFFECTIVEDATE']
     
     missing_values = ["", "None", "NaN", "null", "N/A", "n/a", "na", "NA", "#N/A", "?", "missing", 'N.A', 'nan']
     
@@ -855,7 +914,56 @@ def process_dates_vectorized(df, cutoff_date=None):
                         pass
             if future_count > 0:
                 logger.warning(f"  - {future_count} dates still beyond cutoff after MDY/DMY swap attempt")
-        
+        # Step 7b: For ACCOUNTSTATUSDATE, apply an independent auto-computed cutoff.
+        # Cutoff = last day of the current calendar month at runtime.
+        # Ambiguous dates beyond the cutoff are swapped (DMY); if still unresolvable,
+        # the original parsed value is kept — nothing is blanked or removed.
+        if col == 'ACCOUNTSTATUSDATE':
+            import calendar as _calendar
+            _now = datetime.now()
+            _last_day = _calendar.monthrange(_now.year, _now.month)[1]
+            _asd_cutoff = datetime(_now.year, _now.month, _last_day, 23, 59, 59)
+            logger.info(f"  - Applying independent cutoff validation for ACCOUNTSTATUSDATE (cutoff: {_asd_cutoff.strftime('%Y-%m-%d')})")
+
+            def validate_asd(row_idx):
+                date_str = result[row_idx]
+
+                if pd.isna(date_str):
+                    return date_str
+
+                try:
+                    parsed_date = datetime.strptime(str(date_str), '%Y%m%d')
+
+                    if parsed_date > _asd_cutoff:
+                        # Swap month and day directly on the parsed result.
+                        # This is format-agnostic — works regardless of whether the
+                        # original was DD/MM/YYYY, YYYY-MM-DD, or a pandas datetime.
+                        m, d = parsed_date.month, parsed_date.day
+                        if m <= 12 and d <= 12 and m != d:  # Only ambiguous if both ≤ 12
+                            try:
+                                swapped = parsed_date.replace(month=d, day=m)
+                                if swapped >= datetime(1900, 1, 1) and swapped <= _asd_cutoff:
+                                    logger.info(f"    - [ASD] Reinterpreted {date_str} -> {swapped.strftime('%Y%m%d')} (swapped month/day)")
+                                    return swapped.strftime('%Y%m%d')
+                            except ValueError:
+                                pass  # Swapped date is invalid (e.g. month=13) — keep original
+                        # Not ambiguous or swap didn't help — keep original parsed value
+                    return date_str
+                except Exception:
+                    return date_str
+
+            for idx in result.index:
+                result[idx] = validate_asd(idx)
+
+            asd_future_count = sum(
+                1 for idx in result.index
+                if pd.notna(result[idx]) and
+                datetime.strptime(str(result[idx]), '%Y%m%d') > _asd_cutoff
+                if result[idx] and str(result[idx]).isdigit()
+            )
+            if asd_future_count > 0:
+                logger.info(f"  - [ASD] {asd_future_count} dates remain beyond cutoff (kept as-is — unresolvable ambiguity)")
+
         # Assign back to dataframe
         df[col] = result
         
@@ -2465,13 +2573,13 @@ def process_collateral_details(df):
                 return text
             
             # Remove numeric values
-            text = re.sub(r'\d+', '', text)
+            # text = re.sub(r'\d+', '', text)
             
             # Remove special characters but preserve spaces and ampersands
             # text = re.sub(r'[^a-zA-Z\s&]', '', text)
             
             # # Remove multiple spaces and strip
-            # text = re.sub(r'\s+', ' ', text).strip()
+            text = re.sub(r'\s+', ' ', text).strip()
             
             return text
             
@@ -2582,6 +2690,12 @@ def merge_individual_borrowers(consu, credit, guar):
         consu['CUSTOMERID'].notna() & 
         (consu['CUSTOMERID'].str.strip() != '')
     ]
+
+    # Also filter credit to prevent empty CUSTOMERID cross-joins
+    credit_cleaned = credit[
+        credit['CUSTOMERID'].notna() &
+        (credit['CUSTOMERID'].astype(str).str.strip() != '')
+    ] if 'CUSTOMERID' in credit.columns else credit
     
     # Merge attempts for individual borrowers
     merge_attempted = False
@@ -2593,7 +2707,7 @@ def merge_individual_borrowers(consu, credit, guar):
             logger.info("Attempting primary merge on CUSTOMERID")
             indi = pd.merge(
                 consu_cleaned, 
-                credit, 
+                credit_cleaned, 
                 on='CUSTOMERID', 
                 how='inner',
                 indicator=True  # Add merge indicator
@@ -2611,10 +2725,15 @@ def merge_individual_borrowers(consu, credit, guar):
         logger.info("Attempting fallback merge with ACCOUNTNUMBER")
         try:
             if 'ACCOUNTNUMBER' in credit.columns:
+                # Filter credit ACCOUNTNUMBER blanks before fallback merge
+                credit_acct_cleaned = credit[
+                    credit['ACCOUNTNUMBER'].notna() &
+                    (credit['ACCOUNTNUMBER'].astype(str).str.strip() != '')
+                ] if 'ACCOUNTNUMBER' in credit.columns else credit
                 # Use outer join temporarily to analyze matches
                 temp_merge = pd.merge(
                     consu_cleaned,
-                    credit,
+                    credit_acct_cleaned,
                     left_on='CUSTOMERID',
                     right_on='ACCOUNTNUMBER',
                     how='outer',
@@ -2649,23 +2768,6 @@ def merge_individual_borrowers(consu, credit, guar):
         logger.info(f"Credit shape: {credit.shape}")
         return pd.DataFrame(), set()
   
-
-#   --------------------------------------------------TEST THIS MERGE IF ITS OKAY____-----------------------------------------------------
-    # Merge with guarantor information (simplified - no fallback logic)
-    try:
-        logger.info("Attempting guarantor merge with ACCOUNTNUMBER")
-        indi = pd.merge(
-            indi,
-            guar,
-            left_on='ACCOUNTNUMBER',
-            right_on='CUSTOMERSACCOUNTNUMBER',
-            how='left'
-        )
-        logger.info(f"Guarantor merge completed. Final shape: {indi.shape}")
-            
-    except Exception as e:
-        logger.info(f"Guarantor merge failed: {str(e)}")
-        logger.info("Continuing with original data")
     
     # Handle BVNNUMBER column conflicts from individual borrower and credit info merge
     # Priority: Individual Borrower BVNNUMBER > Credit Info BVNNUMBER
@@ -2692,6 +2794,49 @@ def merge_individual_borrowers(consu, credit, guar):
     matched_credit_ids = set()
     if not indi.empty and 'CUSTOMERID' in indi.columns:
         matched_credit_ids = set(indi['CUSTOMERID'].dropna().unique())
+
+    try:
+        logger.info("Attempting guarantor merge with ACCOUNTNUMBER")
+        indi_has_key = (
+            indi['ACCOUNTNUMBER'].notna() &
+            (indi['ACCOUNTNUMBER'].astype(str).str.strip() != '') &
+            (~indi['ACCOUNTNUMBER'].astype(str).str.lower().isin(['nan', 'none']))
+        )
+        indi_for_merge = indi[indi_has_key]
+        indi_no_key = indi[~indi_has_key]
+
+        if not guar.empty and 'CUSTOMERSACCOUNTNUMBER' in guar.columns:
+            guar = guar.copy()
+            guar_has_key = (
+                guar['CUSTOMERSACCOUNTNUMBER'].notna() &
+                (guar['CUSTOMERSACCOUNTNUMBER'].astype(str).str.strip() != '') &
+                (~guar['CUSTOMERSACCOUNTNUMBER'].astype(str).str.lower().isin(['nan', 'none']))
+            )
+            guar_clean = guar[guar_has_key]
+        else:
+            guar_clean = guar
+
+        merged = pd.merge(
+            indi_for_merge,
+            guar_clean,
+            left_on='ACCOUNTNUMBER',
+            right_on='CUSTOMERSACCOUNTNUMBER',
+            how='left'
+        )
+        # Re-attach rows that had blank keys (they get no guarantor data)
+        indi = pd.concat([merged, indi_no_key], ignore_index=True)
+        logger.info(f"Guarantor merge completed. Final shape: {indi.shape}")
+
+    except Exception as e:
+        logger.info(f"Guarantor merge failed: {str(e)}")
+        logger.info("Continuing with original data")
+
+    # Always ensure every guarantor column header exists in indi,
+    # even when guar was empty or the merge produced no matches.
+    # This MUST run AFTER the guarantor merge to avoid _x/_y suffix duplication.
+    for guar_col in guar_mapping.keys():
+        if guar_col not in indi.columns:
+            indi[guar_col] = ''
     
     logger.info(f"[INDIVIDUAL MERGE] Matched {len(matched_credit_ids)} unique credit customer IDs")
     
@@ -2732,6 +2877,12 @@ def merge_corporate_borrowers(comm, credit, prin):
         comm['CUSTOMERID'].notna() & 
         (comm['CUSTOMERID'].str.strip() != '')
     ]
+
+    # Also filter credit to prevent empty CUSTOMERID cross-joins
+    credit_cleaned = credit[
+        credit['CUSTOMERID'].notna() &
+        (credit['CUSTOMERID'].astype(str).str.strip() != '')
+    ] if 'CUSTOMERID' in credit.columns else credit
     
     # Merge attempts for corporate borrowers
     merge_attempted = False
@@ -2743,7 +2894,7 @@ def merge_corporate_borrowers(comm, credit, prin):
             logger.info("Attempting primary merge on CUSTOMERID")
             corpo = pd.merge(
                 comm_cleaned, 
-                credit,
+                credit_cleaned,
                 on='CUSTOMERID', 
                 how='inner',
                 indicator=True
@@ -2760,10 +2911,15 @@ def merge_corporate_borrowers(comm, credit, prin):
         logger.info("Attempting fallback merge with ACCOUNTNUMBER")
         try:
            if 'ACCOUNTNUMBER' in credit.columns:
+                # Filter credit ACCOUNTNUMBER blanks before fallback merge
+                credit_acct_cleaned = credit[
+                    credit['ACCOUNTNUMBER'].notna() &
+                    (credit['ACCOUNTNUMBER'].astype(str).str.strip() != '')
+                ] if 'ACCOUNTNUMBER' in credit.columns else credit
                 # Use outer join temporarily to analyze matches
                 temp_merge = pd.merge(
                     comm_cleaned,
-                    credit,
+                    credit_acct_cleaned,
                     left_on='CUSTOMERID',
                     right_on='ACCOUNTNUMBER',
                     how='outer',
@@ -2899,6 +3055,10 @@ def remove_duplicates(df, columns_to_check=None):
         logger.info(f"Removed {rows_removed} duplicate rows")
     
     return df_cleaned
+# Pre-computed lowercase keyword sets for confidence classification (module-level for performance)
+_COMMERCIAL_KEYWORDS_LOWER = frozenset(k.lower() for k in commercial_keywords)
+_TIER_2_STRONG = _COMMERCIAL_KEYWORDS_LOWER - TIER_1_SUFFIXES - TIER_3_AMBIGUOUS
+
 
 def is_commercial_entity(name, commercial_keywords):
     """
@@ -2925,55 +3085,88 @@ def is_commercial_entity(name, commercial_keywords):
         if keyword in name_words
     ]
     
-    # Debug print for analysis
-    # if commercial_matches:
-    #     logger.info(f"Potential commercial entity detected: {name}")
-    #     logger.info(f"Matched standalone keywords: {commercial_matches}")
     
     return len(commercial_matches) > 0
 
+def classify_commercial_confidence(name):
+    """
+    Tiered confidence classifier for commercial entity detection.
+
+    Returns:
+        'auto_commercial' - Last word is a Tier 1 suffix, OR 2+ Tier 1/2 combined matches.
+        'manual_review'   - Exactly 1 Tier 2 match, OR any Tier 3 ambiguous match.
+        None              - No commercial keyword matched (stays in individual).
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    words = name.lower().split()
+    words_set = set(words)
+
+    tier1_matches = words_set & TIER_1_SUFFIXES
+    tier2_matches = words_set & _TIER_2_STRONG
+    tier3_matches = words_set & TIER_3_AMBIGUOUS
+
+    # No commercial keyword at all → stay in individual
+    if not tier1_matches and not tier2_matches and not tier3_matches:
+        return None
+
+    # Any Tier 1 or Tier 2 match → unambiguously commercial, auto-move
+    if tier1_matches or tier2_matches:
+        return 'auto_commercial'
+
+    # Only Tier 3 ambiguous word(s) matched → manual review
+    return 'manual_review'
+
 def split_commercial_entities(indi):
-    # Create a DataFrame to store commercial entities/
-    corpo2 = pd.DataFrame(columns=indi.columns)
-    
-    # Rows to remove from individual borrowers
+    """
+    Split individual borrowers into three groups based on commercial confidence.
+
+    Returns:
+        remaining_indi     - Records with no commercial keyword match (stay as individual).
+        auto_commercial    - High-confidence commercial entities (auto-moved, skip UI).
+        manual_review      - Ambiguous records sent to the verification queue.
+    """
+    auto_commercial_rows = []
+    manual_review_rows = []
     rows_to_remove = []
-    
-    # Iterate through individual borrowers to find commercial entities
+
     for index, row in indi.iterrows():
-        # Combine name columns for checking
         name_columns = ['SURNAME', 'FIRSTNAME', 'MIDDLENAME']
-        full_name = ' '.join([str(row[col]).lower() for col in name_columns if pd.notna(row[col])])
-        
-        # Check if the name is a commercial entity
-        if is_commercial_entity(full_name, commercial_keywords):
-            # Prepare the row for commercial entities
-            commercial_row = row.copy()
-            
-            # Store the original combined name for potential reverting
-            original_combined_name = f"{row['SURNAME']} {row['FIRSTNAME']} {row['MIDDLENAME']}".strip()
-            commercial_row['ORIGINAL_BUSINESSNAME'] = original_combined_name
-            
-            # Combine names into SURNAME, drop other name columns
-            commercial_row['SURNAME'] = original_combined_name
-            # commercial_row = commercial_row.drop(['FIRSTNAME', 'MIDDLENAME'])
-            # Set DATA column to 'D'
-            commercial_row['DATA'] = 'D'
-            # Append to commercial entities
-            corpo2 = pd.concat([corpo2, pd.DataFrame([commercial_row])], ignore_index=True)
-            rows_to_remove.append(index)
-    
-    # Remove identified commercial entities from individual borrowers
+        full_name = ' '.join([str(row[col]) for col in name_columns if pd.notna(row[col]) and str(row[col]).lower() not in ('nan', 'none', '')])
+
+        confidence = classify_commercial_confidence(full_name)
+        if confidence is None:
+            continue
+
+        commercial_row = row.copy()
+        original_combined_name = full_name.strip()
+        commercial_row['ORIGINAL_BUSINESSNAME'] = original_combined_name
+        commercial_row['SURNAME'] = original_combined_name
+        commercial_row['DATA'] = 'D'
+
+        rows_to_remove.append(index)
+        if confidence == 'auto_commercial':
+            auto_commercial_rows.append(commercial_row)
+        else:
+            manual_review_rows.append(commercial_row)
+
     indi = indi.drop(rows_to_remove).reset_index(drop=True)
-    
-    # After creation, ensure DATA column exists and is filled, and replace None with ''
-    if not corpo2.empty:
-        if 'DATA' not in corpo2.columns:
-            corpo2['DATA'] = 'D'
-        corpo2['DATA'] = corpo2['DATA'].fillna('D')
-        corpo2 = corpo2.where(pd.notnull(corpo2), '')
-    
-    return indi, corpo2
+
+    def _finalise(rows, columns):
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        df = pd.DataFrame(rows)
+        if 'DATA' not in df.columns:
+            df['DATA'] = 'D'
+        df['DATA'] = df['DATA'].fillna('D')
+        df = df.where(pd.notnull(df), '')
+        return df
+
+    auto_commercial = _finalise(auto_commercial_rows, indi.columns)
+    manual_review = _finalise(manual_review_rows, indi.columns)
+
+    return indi, auto_commercial, manual_review
 
 def is_consumer_entity(name, commercial_keywords, threshold=90):
     """
@@ -2995,57 +3188,110 @@ def is_consumer_entity(name, commercial_keywords, threshold=90):
                 return False
     return True
 
+def classify_consumer_confidence(name):
+    """
+    Tiered confidence classifier for consumer entity detection.
+
+    Returns:
+        'auto_consumer'  - Zero commercial keyword matches → clearly a personal name.
+        'manual_review'  - ONLY Tier 3 ambiguous keyword(s) matched → needs human check.
+        None             - A Tier 1 or Tier 2 keyword matched → stays in corporate.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    words_set = set(name.lower().split())
+
+    if words_set & TIER_1_SUFFIXES:
+        return None
+    if words_set & _TIER_2_STRONG:
+        return None
+
+    tier3_matches = words_set & TIER_3_AMBIGUOUS
+    if tier3_matches:
+        return 'manual_review'
+
+    return 'auto_consumer'
+
 def split_consumer_entities(corpo):
     """
-    FIXED: This function now correctly splits a business name into a maximum
-    of three parts and preserves the original business name for reverting.
+    Split corporate borrowers into three groups based on consumer confidence.
+
+    Returns:
+        remaining_corpo  - Records with a Tier 1 or Tier 2 keyword match (stay as corporate).
+        auto_consumer    - Zero keyword matches → clearly personal names (auto-moved, skip UI).
+        manual_review    - Only Tier 3 ambiguous keyword(s) matched → sent to verification queue.
     """
     if 'BUSINESSNAME' not in corpo.columns:
-        return corpo, pd.DataFrame()
-        
-    indi2 = pd.DataFrame()
+        return corpo, pd.DataFrame(), pd.DataFrame()
+
+    auto_consumer_rows = []
+    manual_review_rows = []
     rows_to_remove = []
-    
+
     for index, row in corpo.iterrows():
         if pd.isna(row['BUSINESSNAME']):
             continue
-        
+
         business_name = str(row['BUSINESSNAME']).strip()
-        
-        if is_consumer_entity(business_name, commercial_keywords):
-            consumer_data = row.to_dict()
-            
-            # Store the original name for records that might be sent back
-            consumer_data['ORIGINAL_BUSINESSNAME'] = business_name
-            
-            # Apply remove_titles function before splitting to clean titles
-            cleaned_business_name = remove_titles(business_name)
-            
-            # Split the cleaned business name into a max of 3 parts
-            name_parts = cleaned_business_name.split(maxsplit=2)
-            
-            # Assign name parts correctly
-            consumer_data['SURNAME'] = name_parts[0] if len(name_parts) > 0 else ''
-            consumer_data['FIRSTNAME'] = name_parts[1] if len(name_parts) > 1 else ''
-            consumer_data['MIDDLENAME'] = name_parts[2] if len(name_parts) > 2 else ''
-            consumer_data['DEPENDANTS'] = '00'
-            consumer_data['DATA'] = 'D'
+        confidence = classify_consumer_confidence(business_name)
 
-            # Remove the original BUSINESSNAME key to avoid conflicts
-            if 'BUSINESSNAME' in consumer_data:
-                del consumer_data['BUSINESSNAME']
+        if confidence is None:
+            continue
+        if 'DATEOFINCORPORATION' not in row.index:
+            continue
 
-            temp_df = pd.DataFrame([consumer_data])
-            indi2 = pd.concat([indi2, temp_df], ignore_index=True)
-            rows_to_remove.append(index)
-            
-    if not corpo.empty and rows_to_remove:
+        doi_value = row['DATEOFINCORPORATION']
+        doi_is_empty = (
+            doi_value is None
+            or (isinstance(doi_value, float) and pd.isna(doi_value))
+            or str(doi_value).strip() == ''
+            or str(doi_value).strip().lower() in ('none', 'nan', 'null', 'nill', 'nil')
+        )
+        if doi_is_empty:
+            continue
+
+        try:
+            doi_str = str(doi_value).strip()
+            parsed_doi = dateparser.parse(doi_str)
+            if parsed_doi is None:
+                continue  # Unparseable date — keep as commercial
+            years_since_incorporation = datetime.now().year - parsed_doi.year
+            if years_since_incorporation < 18:
+                continue  # Recently incorporated — keep as commercial
+        except Exception:
+            continue  # Any parsing error — keep as commercial
+
+        consumer_data = row.to_dict()
+        consumer_data['ORIGINAL_BUSINESSNAME'] = business_name
+
+        cleaned_business_name = remove_titles(business_name)
+        name_parts = cleaned_business_name.split(maxsplit=2)
+        consumer_data['SURNAME'] = name_parts[0] if len(name_parts) > 0 else ''
+        consumer_data['FIRSTNAME'] = name_parts[1] if len(name_parts) > 1 else ''
+        consumer_data['MIDDLENAME'] = name_parts[2] if len(name_parts) > 2 else ''
+        consumer_data['DEPENDANTS'] = '00'
+        consumer_data['DATA'] = 'D'
+
+        if 'BUSINESSNAME' in consumer_data:
+            del consumer_data['BUSINESSNAME']
+
+        rows_to_remove.append(index)
+        if confidence == 'auto_consumer':
+            auto_consumer_rows.append(consumer_data)
+        else:
+            manual_review_rows.append(consumer_data)
+
+    if rows_to_remove:
         corpo = corpo.drop(rows_to_remove).reset_index(drop=True)
-    
-    if not indi2.empty:
-        indi2 = indi2.where(pd.notnull(indi2), '')
 
-    return corpo, indi2
+    def _to_df(rows):
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        return df.where(pd.notnull(df), '')
+
+    return corpo, _to_df(auto_consumer_rows), _to_df(manual_review_rows)
 
 def merge_dataframes(processed_sheets):
     """
@@ -3078,7 +3324,8 @@ def merge_dataframes(processed_sheets):
         # Split commercial entities from the consumer_merged data
         if not indi.empty:
             logger.info("\nSplitting commercial entities from consumer_merged data...")
-            indi, corpo2 = split_commercial_entities(indi)
+            indi, auto_commercial_merged, manual_commercial_merged = split_commercial_entities(indi)
+            corpo2 = pd.concat([auto_commercial_merged, manual_commercial_merged], ignore_index=True)
             logger.info(f"  - Individual records after split: {len(indi)}")
             logger.info(f"  - Commercial entities extracted: {len(corpo2)}")
 
@@ -3119,7 +3366,8 @@ def merge_dataframes(processed_sheets):
         # Split consumer entities from the commercial_merged data
         if not corpo.empty:
             logger.info("\nSplitting consumer entities from commercial_merged data...")
-            corpo, indi2 = split_consumer_entities(corpo)
+            corpo, auto_consumer_merged, manual_consumer_merged = split_consumer_entities(corpo)
+            indi2 = pd.concat([auto_consumer_merged, manual_consumer_merged], ignore_index=True)
             logger.info(f"  - Corporate records after split: {len(corpo)}")
             logger.info(f"  - Consumer entities extracted: {len(indi2)}")
 
@@ -3182,7 +3430,8 @@ def merge_dataframes(processed_sheets):
     corpo = corpo.applymap(lambda x: None if str(x).strip().lower() in ['none', 'nan', 'null', 'nill', 'nil'] else x)
     
     #Step 3: Split commercial entities from individual borrowers
-    indi, corpo2 = split_commercial_entities(indi)
+    indi, auto_commercial_reg, manual_commercial_reg = split_commercial_entities(indi)
+    corpo2 = pd.concat([auto_commercial_reg, manual_commercial_reg], ignore_index=True)
 
     logger.info("\n=== SHEET DATA AFTER MERGING ===")
     logger.info("Number of rows:", len(indi))
@@ -3253,7 +3502,8 @@ def merge_dataframes(processed_sheets):
             logger.info("Cannot identify commercial entities in corporate borrowers")
     
     # Step 5: Split consumer entities from corporate borrowers
-    corpo, indi2 = split_consumer_entities(corpo)
+    corpo, auto_consumer_reg, manual_consumer_reg = split_consumer_entities(corpo)
+    indi2 = pd.concat([auto_consumer_reg, manual_consumer_reg], ignore_index=True)
     
     logger.info("\n=== SPLIT CONSUMER ENTITIES ===")
     logger.info("Corporate records after split:", len(corpo))
@@ -3522,8 +3772,12 @@ def upload_file(request):
                 uploaded_files = [uploaded_files]
             
             # For display/tracking, combine all filenames
-            original_filenames = [os.path.splitext(f.name)[0] for f in uploaded_files]
+            # original_filenames = [os.path.splitext(f.name)[0] for f in uploaded_files]
             combined_filename = ', '.join([f.name for f in uploaded_files])
+                        
+            # Truncate to 255 characters to fit in database field (max_length=255)
+            if len(combined_filename) > 255:
+                combined_filename = combined_filename[:252] + '...'
             total_size = sum(f.size for f in uploaded_files)
             
             # Capture user-selected reporting period
@@ -3623,7 +3877,6 @@ def upload_file(request):
             try:
                 from django_q.tasks import async_task
                 from .tasks import process_uploaded_file
-                ra
                 task_id = async_task(
                     process_uploaded_file,
                     upload_session.id,
@@ -4001,6 +4254,7 @@ def verify_split_decision(request):
             'consumer_candidates': consumer_candidates,
             'columns_commercial': columns_commercial,
             'columns_consumer': columns_consumer,
+            'upload_session_id': request.session.get('upload_session_id'),
         })
     
     # Handle POST request (user's verification decisions)

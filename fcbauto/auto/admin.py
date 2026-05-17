@@ -8,7 +8,7 @@ from django.http import HttpResponse
 from django.template.response import TemplateResponse
 from django.shortcuts import render
 from django import forms
-from .models import Subscriber, SubscriberToken, UserSubscriberPermission, Feedback, SubscriberEmail
+from .models import Subscriber, SubscriberToken, UserSubscriberPermission, Feedback
 
 
 class SubscriberMultipleChoiceField(forms.ModelMultipleChoiceField):
@@ -138,19 +138,6 @@ class SubscriberAdmin(admin.ModelAdmin):
         return False  # External table, no editing
 
 
-@admin.register(SubscriberEmail)
-class SubscriberEmailAdmin(admin.ModelAdmin):
-    list_display = ('subscriber_id', 'subscriber_name_display', 'email', 'updated_at')
-    search_fields = ('subscriber_id', 'email')
-    ordering = ('subscriber_id',)
-
-    def subscriber_name_display(self, obj):
-        try:
-            subscriber = Subscriber.objects.get(subscriber_id=obj.subscriber_id)
-            return subscriber.subscriber_name
-        except Subscriber.DoesNotExist:
-            return f"ID: {obj.subscriber_id} (Not Found)"
-    subscriber_name_display.short_description = 'Subscriber Name'
 
 
 @admin.register(SubscriberToken)

@@ -35,14 +35,14 @@ EXCEL_SIGNATURES = {
     },
 }
 
-# Allowed extensions (XLSX, XLS, XLSB, XLSM)
-ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.xlsb', '.xlsm'}
+# Allowed extensions (XLSX, XLS, XLSB, XLSM, CSV, TXT)
+ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.xlsb', '.xlsm', '.csv', '.txt'}
 
 # User-friendly error messages
 ERROR_MESSAGES = {
     'no_file': 'No file was uploaded. Please select a file and try again.',
     'empty_file': 'The uploaded file is empty. Please upload a valid Excel file.',
-    'invalid_extension': 'Invalid file extension. Only Excel files (.xlsx, .xls, .xlsb, .xlsm) are allowed.',
+    'invalid_extension': 'Invalid file extension. Only Excel files (.xlsx, .xls, .xlsb, .xlsm) and delimited text files (.csv, .txt) are allowed.',
     'invalid_content': (
         'The file content does not match a valid Excel format. '
         'This may happen if a non-Excel file was renamed with an Excel extension. '
@@ -151,6 +151,57 @@ def validate_excel_file_type(uploaded_file):
         return False, ERROR_MESSAGES['invalid_content']
     
     logger.info(f"[FILE VALIDATION] File validated successfully: {filename}")
+    return True, None
+
+
+def validate_csv_file(uploaded_file):
+    """
+    Validate that an uploaded CSV file is readable as plain text.
+
+    CSV files have no magic bytes, so we just verify the extension and that
+    the file content is decodable as UTF-8 text (not a renamed binary file).
+
+    Args:
+        uploaded_file: Django UploadedFile object
+
+    Returns:
+        tuple: (is_valid: bool, error_message: str or None)
+    """
+    if not uploaded_file:
+        return False, ERROR_MESSAGES['no_file']
+
+    if uploaded_file.size == 0:
+        return False, ERROR_MESSAGES['empty_file']
+
+    filename = getattr(uploaded_file, 'name', '')
+    extension = get_file_extension(filename)
+
+    if extension not in ('.csv', '.txt'):
+        return False, ERROR_MESSAGES['invalid_extension']
+
+    # Try reading the first 512 bytes to verify it is decodable plain text
+    # (accept UTF-8, Windows-1252/CP1252, and Latin-1 encoded files)
+    try:
+        current_position = uploaded_file.tell()
+        uploaded_file.seek(0)
+        sample = uploaded_file.read(512)
+        uploaded_file.seek(current_position)
+        # Try common encodings; latin-1 is the guaranteed fallback that
+        # decodes every byte, so if even that fails it's truly binary data.
+        for enc in ('utf-8-sig', 'cp1252', 'latin-1'):
+            try:
+                sample.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            logger.warning(f"[FILE VALIDATION] {filename} could not be decoded as text")
+            return False, "The file appears to be binary data, not a text/CSV file."
+    except Exception as e:
+        logger.error(f"[FILE VALIDATION] Error reading CSV file {filename}: {e}")
+        return False, ERROR_MESSAGES['file_read_error']
+
+    logger.info(f"[FILE VALIDATION] CSV file validated successfully: {filename}")
     return True, None
 
 

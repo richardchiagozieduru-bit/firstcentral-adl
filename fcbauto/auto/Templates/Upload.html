@@ -26,7 +26,7 @@
     padding: 0.75rem 1rem;
     cursor: pointer;
     font-weight: 500;
-    color: #0d6efd;
+    color: #1B3D8C;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
@@ -47,7 +47,7 @@
   /* Main Upload Card Styling */
   .upload-container {
     /* Unified global gradient for the upload card */
-    background: linear-gradient(135deg, #d6efff 0%, #ffe7c2 100%);
+    background: linear-gradient(135deg, #e8eef8 0%, #fef0e4 100%);
     padding: 3rem;
     border-radius: 0 15px 15px 15px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.1);
@@ -59,13 +59,13 @@
       margin-bottom: 1.5rem;
       display: inline-block;
       padding: 1.25rem;
-      background-color: #e9f5ff;
+      background-color: #e8eef8;
       border-radius: 8px;
   }
 
   .file-upload-icon {
     font-size: 2.5rem;
-    color: #0d6efd;
+    color: #1B3D8C;
   }
 
   .upload-container h2 {
@@ -96,8 +96,8 @@
   }
 
   .drag-drop-area:hover, .drag-drop-area.is-dragover {
-      border-color: #0d6efd;
-      background-color: #f0f6ff;
+      border-color: #1B3D8C;
+      background-color: #eef2fb;
   }
 
   .drag-drop-icon {
@@ -136,7 +136,7 @@
   }
 
   .btn-upload-file {
-      background: #0d6efd;
+      background: #1B3D8C;
       color: white;
       border: none;
       padding: 0.85rem 2rem;
@@ -145,12 +145,14 @@
       width: 100%;
       font-size: 1rem;
       transition: all 0.3s ease;
-      box-shadow: 0 4px 15px rgba(13, 110, 253, 0.2);
+      box-shadow: 0 4px 15px rgba(27, 61, 140, 0.2);
   }
 
   .btn-upload-file:hover {
+      background: #D4620D;
+      color: white;
       transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(13, 110, 253, 0.3);
+      box-shadow: 0 6px 20px rgba(212, 98, 13, 0.4);
   }
   
   /* ================================================= */
@@ -166,7 +168,7 @@
 
   /* 1. We make the button a flex container to easily center its content. */
   .btn-upload-file {
-      background: #0d6efd;
+      background: #1B3D8C;
       color: white;
       border: none;
       padding: 0.85rem 2rem;
@@ -175,7 +177,7 @@
       width: 100%;
       font-size: 1rem;
       transition: all 0.3s ease;
-      box-shadow: 0 4px 15px rgba(13, 110, 253, 0.2);
+      box-shadow: 0 4px 15px rgba(27, 61, 140, 0.2);
       
       /* Flexbox properties for centering */
       display: flex;
@@ -188,8 +190,10 @@
 
 
   .btn-upload-file:hover {
+      background: #D4620D;
+      color: white;
       transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(13, 110, 253, 0.3);
+      box-shadow: 0 6px 20px rgba(212, 98, 13, 0.4);
   }
 
   /* 2. The spinner is hidden by default. No absolute positioning needed. */
@@ -221,25 +225,26 @@
   }
 
   /* (Keep all other existing styles for results page, etc.) */
-  .results-wrapper { background: white; border-radius: 0 8px 8px 8px; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border: 1px solid #e0e0e0; }
+  .results-wrapper { background: white; border-radius: 0 8px 8px 8px; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border: 1px solid #e0e0e0; border-top: 3px solid #1B3D8C; }
   .success-alert { background-color: #e6f9f0; color: #198754; border: 1px solid #a3e9c7; border-radius: 6px; padding: 1rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; font-weight: 500; text-align: center; }
   .stat-card-row { display: flex; gap: 1.5rem; margin: 1.5rem 0; }
   .stat-card { flex: 1; background: #ffffff; border-radius: 8px; padding: 1.5rem; border: 1px solid #dee2e6; display: flex; align-items: center; gap: 1rem; }
   .stat-card .icon { font-size: 1.5rem; padding: 0.75rem; border-radius: 6px; }
-  .stat-card .icon.individual { background-color: #e9f5ff; color: #0d6efd; }
-  .stat-card .icon.corporate { background-color: #fff4e6; color: #fd7e14; }
+  .stat-card .icon.individual { background-color: #e8eef8; color: #1B3D8C; }
+  .stat-card .icon.corporate { background-color: #fef0e4; color: #F47920; }
   .stat-card .count { font-size: 2.25rem; font-weight: 600; color: #212529; }
   .stat-card .label { font-size: 0.9rem; color: #6c757d; font-weight: 500; text-transform: uppercase; margin-bottom: 0.25rem; }
   .stat-card .status { font-size: 0.8rem; color: #198754; }
   .stat-card .status.warning { color: #fd7e14; }
   .stat-card .count.warning { color: #fd7e14; }
-  .section-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: #343a40; }
+  .section-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: #1B3D8C; }
   .processing-table { font-size: 0.9rem; }
-  .processing-table th { font-weight: 600; color: #6c757d; text-transform: uppercase; background-color: #f8f9fa; }
+  .processing-table th { font-weight: 600; color: #1B3D8C; text-transform: uppercase; background-color: #e8eef8; }
 
-  .btn-upload-new { background-color: #f8f9fa; border: 1px solid #dee2e6; color: #212529; font-weight: 500; padding: 0.6rem 1.5rem; border-radius: 6px; text-decoration: none; }
-  .btn-pdf-export { background-color: #dc3545; color: white; border: 1px solid #dc3545; font-weight: 500; padding: 0.6rem 1.5rem; border-radius: 6px; text-decoration: none; transition: all 0.3s ease; }
-  .btn-pdf-export:hover { background-color: #c82333; border-color: #bd2130; color: white; text-decoration: none; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(220, 53, 69, 0.3); }
+  .btn-upload-new { background-color: #f8f9fa; border: 1px solid #dee2e6; color: #212529; font-weight: 500; padding: 0.6rem 1.5rem; border-radius: 6px; text-decoration: none; transition: all 0.3s ease; }
+  .btn-upload-new:hover { background-color: #D4620D; border-color: #D4620D; color: white; text-decoration: none; }
+  .btn-pdf-export { background-color: #1B3D8C; color: white; border: 1px solid #1B3D8C; font-weight: 500; padding: 0.6rem 1.5rem; border-radius: 6px; text-decoration: none; transition: all 0.3s ease; }
+  .btn-pdf-export:hover { background-color: #D4620D; border-color: #D4620D; color: white; text-decoration: none; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(212, 98, 13, 0.3); }
   
   /* Collapsible Help Section Styles */
   .help-section {
@@ -326,7 +331,7 @@
   }
   
   .help-content li i {
-    color: #0d6efd;
+    color: #1B3D8C;
     margin-right: 0.5rem;
   }
 
@@ -346,7 +351,7 @@
         <div class="help-content" id="helpContent">
             <div class="help-content-inner">
                 <ul>
-                    <li><i class="fas fa-check-circle"></i><strong>Single Workbook:</strong> Upload an Excel file (.xlsx, .xls, .xlsb, .xlsm) containing all required sheets in one workbook.</li>
+                    <li><i class="fas fa-check-circle"></i><strong>Single Workbook:</strong> Upload an Excel file (.xlsx, .xls, .xlsb, .xlsm) or separate delimited text files (.csv, .txt) &mdash; each file must be named after its sheet type (e.g. <em>credit_information.csv</em>, <em>individual_borrowers.txt</em>).</li>
                     <li><i class="fas fa-check-circle"></i><strong>Required Sheets:</strong> Individual Borrower Template or Corporate Borrower Template, Credit Information (at minimum).</li>
                     <li><i class="fas fa-check-circle"></i><strong>Optional Sheets:</strong> Principal Officers, Guarantors Information.</li>
                     <li><i class="fas fa-check-circle"></i><strong>Key Columns:</strong> Each sheet must have Customer ID. Credit Info needs Account Number. Individual Borrowers need BVN or NIN.</li>
@@ -411,7 +416,7 @@
                 <div id="upload-prompt">
                     <div class="drag-drop-icon"><i class="fas fa-cloud-upload-alt"></i></div>
                     <div class="file-upload-text"><strong>Choose Files</strong> or drag and drop</div>
-                    <div class="file-upload-hint">Excel files only (.xlsx, .xls, .xlsb, .xlsm) - multiple files supported</div>
+                    <div class="file-upload-hint">Excel files (.xlsx, .xls, .xlsb, .xlsm) or delimited text files (.csv, .txt) &mdash; multiple files supported</div>
                 </div>
                 <div id="file-display-area">
                     <div class="fa-stack fa-2x">
@@ -421,7 +426,7 @@
                     <span id="file-name-text" class="mt-2"></span>
                     <div id="file-list-container" style="text-align: left; font-size: 0.85rem; color: #495057; max-height: 100px; overflow-y: auto; width: 100%; margin-top: 0.5rem;"></div>
                 </div>
-                <input type="file" name="file" id="id_file" accept=".xlsx,.xls,.xlsb,.xlsm" multiple>
+                <input type="file" name="file" id="id_file" accept=".xlsx,.xls,.xlsb,.xlsm,.csv,.txt" multiple>
             </div>
 
             <button type="submit" class="btn btn-upload-file" id="uploadButton">
@@ -439,7 +444,7 @@
     {% if current_view == 'results' and success_message %}
     <div class="results-wrapper">
        
-        <div class="alert alert-info mt-3" style="border-left: 4px solid #0dcaf0; background-color: #cff4fc; border-color: #b8daff;">
+        <div class="alert alert-info mt-3" style="border-left: 4px solid #1B3D8C; background-color: #e8eef8; border-color: #c5d3ef; color: #1B3D8C;">
             <i class="fas fa-info-circle me-2"></i>
             <strong>Credit Distribution Analysis:</strong> The counts below show how credit information records were successfully matched and distributed between individual and corporate borrower categories. 
             {% if total_credit_unmerged_count > 0 %}

@@ -40,7 +40,7 @@ class ExcelUploadForm(forms.Form):
     file = MultipleFileField(
         label='Upload files',
         widget=MultipleFileInput(attrs={
-            'accept': '.xlsx,.xls,.xlsb,.xlsm',
+            'accept': '.xlsx,.xls,.xlsb,.xlsm,.csv,.txt',
             'class': 'form-control',
             'multiple': True
         })
@@ -74,33 +74,46 @@ class ExcelUploadForm(forms.Form):
     
     def clean_file(self):
         """
-        Validate uploaded files are genuine Excel files using magic bytes detection.
-        
-        This prevents malicious files from being uploaded by simply renaming them
-        with .xlsx or .xls extensions. Validates each file in multi-file upload.
+        Validate uploaded files are genuine Excel or CSV files.
+
+        - Excel files are validated with magic bytes detection.
+        - CSV files are validated as plain text (no magic bytes).
+        - Mixing CSV and Excel files in the same upload is not allowed.
         """
         uploaded_files = self.cleaned_data.get('file')
-        
+
         if not uploaded_files:
             return uploaded_files
-        
+
         # Ensure it's a list
         if not isinstance(uploaded_files, list):
             uploaded_files = [uploaded_files]
-        
-        from .file_validators import validate_excel_file_type
-        
+
+        from .file_validators import validate_excel_file_type, validate_csv_file
+
+        # Detect whether any file is CSV or Excel
+        csv_count = sum(1 for f in uploaded_files if f and f.name.lower().endswith(('.csv', '.txt')))
+        excel_count = len(uploaded_files) - csv_count
+
+        if csv_count > 0 and excel_count > 0:
+            raise forms.ValidationError(
+                "Please upload either CSV files or Excel files in a single upload — not a mix of both."
+            )
+
         validated_files = []
         for uploaded_file in uploaded_files:
             if uploaded_file:
-                is_valid, error_message = validate_excel_file_type(uploaded_file)
-                
+                if uploaded_file.name.lower().endswith(('.csv', '.txt')):
+                    is_valid, error_message = validate_csv_file(uploaded_file)
+                else:
+                    is_valid, error_message = validate_excel_file_type(uploaded_file)
+
                 if not is_valid:
                     raise forms.ValidationError(f"{uploaded_file.name}: {error_message}")
-                
+
                 # Reset file pointer after validation
                 uploaded_file.seek(0)
                 validated_files.append(uploaded_file)
-        
+
         return validated_files
 

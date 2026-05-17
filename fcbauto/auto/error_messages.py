@@ -67,6 +67,14 @@ ERROR_MAPPINGS = {
         'icon': 'fa-file-excel',
         'category': 'file'
     },
+    "codec can't decode": {
+        'title': 'File Encoding Error',
+        'message': 'The uploaded text file contains characters in an unsupported encoding.',
+        'fix': 'Open the file in a text editor (e.g. Notepad), then re-save it with '
+               '"UTF-8" encoding selected. Alternatively, try saving as a new CSV from Excel.',
+        'icon': 'fa-file-alt',
+        'category': 'file'
+    },
     'openpyxl': {
         'title': 'Excel File Error',
         'message': 'Unable to read the Excel file. The file may be corrupted or in an unsupported format.',

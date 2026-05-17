@@ -4,7 +4,6 @@
 {% block title %}Dashboard - Data Processing Suite{% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 {% endblock %}
 
 {% block extra_css %}
@@ -17,7 +16,7 @@
 
   .dashboard-header {
     /* Unified global gradient for header */
-    background: linear-gradient(135deg, #8ed2fc 0%, #f8c87f 100%);
+    background: linear-gradient(135deg, #ccd9f0 0%, #fddbb8 100%);
     color: #2c3e50;
     padding: 2rem;
     border-radius: 15px;
@@ -98,7 +97,7 @@
   }
 
   .step-number {
-    background: linear-gradient(135deg, #d6efff 0%, #ffe7c2 100%);
+    background: linear-gradient(135deg, #e8eef8 0%, #fef0e4 100%);
     color: black;
     width: 28px;
     height: 28px;
@@ -116,14 +115,14 @@
   }
 
   .upload-link {
-    color: #ffd700;
+    color: #F47920;
     text-decoration: none;
     font-weight: 600;
     transition: color 0.3s ease;
   }
 
   .upload-link:hover {
-    color: #ffed4e;
+    color: #d4620d;
     text-decoration: underline;
   }
 
@@ -135,7 +134,7 @@
   .pulse-icon {
     animation: pulse 2s infinite;
     margin-left: 0.3rem;
-    color: #00b7ff;
+    color: #F47920;
   }
 
   @keyframes pulse {
@@ -182,10 +181,10 @@
   }
 
   .upload-file-btn:hover, .i-remedy-btn:hover {
-    border-color: #00e1ff;;
-    background: rgba(255,255,255,0.2);
+    border-color: #D4620D;
+    background: #D4620D;
     transform: translateY(-2px);
-    color: #00e1ff;
+    color: white;
     text-decoration: none;
   }
 
@@ -479,7 +478,9 @@
 
   .refresh-btn:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+    background: #D4620D;
+    color: white;
+    box-shadow: 0 4px 12px rgba(212, 98, 13, 0.3);
   }
 
   .empty-state {
@@ -505,7 +506,7 @@
     padding: 0.75rem 1rem;
     cursor: pointer;
     font-weight: 500;
-    color: #0d6efd;
+    color: #1B3D8C;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
@@ -900,9 +901,33 @@
   font-size: 0.875rem;
 }
 
+/* View/resume button styles */
+.btn-view {
+  background: #1B3D8C;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  text-decoration: none;
+}
+
+.btn-view:hover {
+  background: #143170;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(27, 61, 140, 0.3);
+  color: white;
+}
+
 /* Cancel button styles */
-.btn-cancel {
-  background: #ffc107;
+.btn-cancel {  background: #ffc107;
   color: #212529;
   border: none;
   border-radius: 6px;
@@ -1166,6 +1191,7 @@
             </button>
         </div>
         <div class="section-content">
+
             {% if recent_uploads %}
                 <div class="table-container">
                     <table class="uploads-table" id="uploads-table">
@@ -1237,6 +1263,17 @@
                             </td>
                             <td>
                                 <div style="display: flex; gap: 4px;">
+                                    {% if upload.status == 'processing' or upload.status == 'pending' or upload.status == 'completed' or upload.status == 'failed' %}
+                                    <a href="{% url 'auto:progress_tracking' upload.id %}"
+                                       class="btn-view" title="View progress">
+                                        <i class="fas fa-eye"></i>
+                                    </a>
+                                    {% elif upload.status == 'awaiting_verification' %}
+                                    <a href="{% url 'auto:verify_split_decision' %}?session_id={{ upload.id }}"
+                                       class="btn-view" title="Go to verification">
+                                        <i class="fas fa-user-check"></i>
+                                    </a>
+                                    {% endif %}
                                     {% if upload.status not in 'completed,cancelled' %}
                                     <button class="btn-cancel" 
                                             data-upload-id="{{ upload.id }}" 
@@ -1271,22 +1308,6 @@
         </div>
     </div>
 
-    <!-- User Engagement Metrics -->
-    <div class="dashboard-section">
-        <div class="section-header">
-            <h3 class="section-title"><i class="fas fa-chart-bar"></i> Upload Activity</h3>
-        </div>
-        <div class="section-content">
-            <div class="engagement-chart" id="engagement-chart">
-                <canvas id="uploadChart" width="400" height="200"></canvas>
-                <div class="chart-placeholder" id="chart-placeholder" style="display: none;">
-                    <i class="fas fa-chart-line fa-3x"></i>
-                    <p>Upload frequency visualization will be displayed here</p>
-                    <small>Chart will load automatically with real data</small>
-                </div>
-            </div>
-        </div>
-    </div>
 </div>
 
 <script>
@@ -1404,122 +1425,7 @@ function getStatusIcon(status) {
 // Auto-refresh every 5 minutes (300 seconds) to reduce server load
 setInterval(refreshDashboard, 300000);
 
-// Chart instance
-let uploadChart = null;
 
-// Load engagement metrics and create chart
-function loadEngagementMetrics() {
-    fetch('{% url "auto:engagement_api" %}')
-        .then(response => response.json())
-        .then(data => {
-            createUploadChart(data);
-        })
-        .catch(error => {
-            console.error('Error loading engagement metrics:', error);
-            showChartPlaceholder();
-        });
-}
-
-// Create upload activity chart
-function createUploadChart(data) {
-    const ctx = document.getElementById('uploadChart').getContext('2d');
-    
-    // Destroy existing chart if it exists
-    if (uploadChart) {
-        uploadChart.destroy();
-    }
-    
-    // Use real daily upload data from API
-    const labels = [];
-    const uploadData = [];
-    
-    if (data.daily_uploads && data.daily_uploads.length > 0) {
-        // Use actual daily upload data
-        data.daily_uploads.forEach(day => {
-            labels.push(day.label);
-            uploadData.push(day.count);
-        });
-    } else {
-        // Fallback: generate empty data for last 7 days
-        const today = new Date();
-        for (let i = 6; i >= 0; i--) {
-            const date = new Date(today);
-            date.setDate(date.getDate() - i);
-            labels.push(date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }));
-            uploadData.push(0);
-        }
-    }
-    
-    uploadChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Daily Uploads',
-                data: uploadData,
-                borderColor: 'rgb(102, 126, 234)',
-                backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                borderWidth: 3,
-                fill: true,
-                tension: 0.4,
-                pointBackgroundColor: 'rgb(102, 126, 234)',
-                pointBorderColor: '#fff',
-                pointBorderWidth: 2,
-                pointRadius: 6,
-                pointHoverRadius: 8
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: false
-                },
-                title: {
-                    display: true,
-                    text: `Upload Activity - Last 7 Days (Total: ${data.total_uploads || 0})`,
-                    font: {
-                        size: 16,
-                        weight: 'bold'
-                    },
-                    color: '#2c3e50'
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: {
-                        color: 'rgba(0,0,0,0.1)'
-                    },
-                    ticks: {
-                        stepSize: 1,
-                        color: '#6c757d'
-                    }
-                },
-                x: {
-                    grid: {
-                        display: false
-                    },
-                    ticks: {
-                        color: '#6c757d'
-                    }
-                }
-            },
-            elements: {
-                point: {
-                    hoverBackgroundColor: 'rgb(118, 75, 162)'
-                }
-            }
-        }
-    });
-}
-
-// Show placeholder when chart fails to load
-function showChartPlaceholder() {
-    document.getElementById('uploadChart').style.display = 'none';
-    document.getElementById('chart-placeholder').style.display = 'flex';
-}
 
 // Get CSRF token from cookie
 function getCookie(name) {
@@ -1735,7 +1641,6 @@ function cancelUpload(uploadId, filename, btn) {
     });
 }
 
-// Load engagement metrics on page load
-document.addEventListener('DOMContentLoaded', loadEngagementMetrics);
+
 </script>
 {% endblock %}

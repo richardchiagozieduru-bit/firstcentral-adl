@@ -41,39 +41,6 @@ class Subscriber(models.Model):
             return None
 
 
-class SubscriberEmail(models.Model):
-    """
-    Stores subscriber contact emails locally.
-    Separate from Subscriber model since that is an unmanaged external MSSQL table.
-    """
-    subscriber_id = models.IntegerField(
-        unique=True,
-        help_text="Reference to subscriber ID from external table",
-        db_index=True
-    )
-    email = models.EmailField(help_text="Subscriber contact email for reports")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'subscriber_emails'
-        verbose_name = 'Subscriber Email'
-        verbose_name_plural = 'Subscriber Emails'
-
-    def __str__(self):
-        try:
-            subscriber = Subscriber.objects.get(subscriber_id=self.subscriber_id)
-            return f"{subscriber.subscriber_name} - {self.email}"
-        except Subscriber.DoesNotExist:
-            return f"Subscriber {self.subscriber_id} - {self.email}"
-
-    @classmethod
-    def get_email(cls, subscriber_id):
-        """Get email for a subscriber, returns None if not set."""
-        try:
-            return cls.objects.get(subscriber_id=subscriber_id).email
-        except cls.DoesNotExist:
-            return None
 
 
 class SubscriberToken(models.Model):

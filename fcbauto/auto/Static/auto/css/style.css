@@ -1,5 +1,5 @@
 body {
-    background: linear-gradient(to bottom, #5ac6cf, #eaeaea);
+    background: linear-gradient(to bottom, #1B3D8C, #eaeaea);
     min-height: 100vh;
     display: flex;
     align-items: center;
@@ -7,7 +7,7 @@ body {
   }
 
   .main-container {
-    background: #e0f7fa;
+    background: #eef2fb;
     padding: 3rem;
     border-radius: 20px;
     box-shadow: 0 15px 30px rgba(0, 0, 0, 0.2);
@@ -34,7 +34,7 @@ body {
   }
 
   .btn {
-    background-color: #ff5722; 
+    background-color: #F47920; 
     color: white; 
     border: none; 
     border-radius: 5px; 
@@ -58,9 +58,10 @@ body {
   }
 
   .btn:hover {
-    background-color: blue;
+    background-color: #D4620D;
+    color: white;
     transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 5px 15px rgba(212, 98, 13, 0.3);
   }
 
 

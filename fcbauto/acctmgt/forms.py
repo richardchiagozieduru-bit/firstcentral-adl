@@ -38,11 +38,20 @@ class CustomAuthenticationForm(AuthenticationForm):
 
 class CustomUserCreationForm(UserCreationForm):
     """
-    Custom user creation form with styling
+    Custom user creation form with styling and email collection
     """
+    email = forms.EmailField(
+        required=True,
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Enter your email address'
+        }),
+        help_text='Reports will be sent to this email after processing.'
+    )
+    
     class Meta:
         model = User
-        fields = ('username', 'password1', 'password2')
+        fields = ('username', 'email', 'password1', 'password2')
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -62,6 +71,12 @@ class CustomUserCreationForm(UserCreationForm):
         self.fields['password2'].widget.attrs.update({
             'placeholder': 'Confirm your password'
         })
+    
+    def clean_email(self):
+        email = self.cleaned_data.get('email')
+        if User.objects.filter(email=email).exists():
+            raise ValidationError('An account with this email already exists.')
+        return email
 
 
 class SubscriberSelectionForm(forms.Form):

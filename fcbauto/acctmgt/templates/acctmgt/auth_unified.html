@@ -20,7 +20,7 @@
             height: 100vh;
             overflow: hidden;
             /* Match global gradient background */
-            background: linear-gradient(135deg, #d6efff 0%, #ffe7c2 100%);
+            background: linear-gradient(135deg, #e8eef8 0%, #fef0e4 100%);
             background-attachment: fixed;
             margin: 0;
         }
@@ -34,7 +34,7 @@
         /* Sidebar Navigation */
         .sidebar {
             width: 250px;
-            background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
+            background: linear-gradient(180deg, #1B3D8C 0%, #143170 100%);
             color: white;
             padding: 0;
             position: fixed;
@@ -63,7 +63,7 @@
         }
 
         .sidebar-header h3 {
-            color: #3498db;
+            color: #F47920;
             font-weight: 700;
             font-size: 1.4rem;
             margin-bottom: 5px;
@@ -93,16 +93,16 @@
         }
 
         .nav-link:hover {
-            background: rgba(52, 152, 219, 0.1);
-            border-left-color: #3498db;
-            color: #3498db;
+            background: rgba(244, 121, 32, 0.1);
+            border-left-color: #F47920;
+            color: #F47920;
             padding-left: 30px;
         }
 
         .nav-link.active {
-            background: rgba(52, 152, 219, 0.2);
-            border-left-color: #3498db;
-            color: #3498db;
+            background: rgba(244, 121, 32, 0.2);
+            border-left-color: #F47920;
+            color: #F47920;
         }
 
         .nav-link i {
@@ -183,9 +183,9 @@
         .hero-bg {
             position: absolute;
             inset: 0;
-            background: radial-gradient(1000px 500px at 80% 20%, rgba(0, 123, 255, 0.25), transparent 60%),
-                        radial-gradient(800px 400px at 0% 100%, rgba(255, 165, 0, 0.25), transparent 60%),
-                        linear-gradient(135deg, #ffffff 0%, rgba(255, 165, 0, 0.35) 35%, rgba(0, 123, 255, 0.35) 100%);
+            background: radial-gradient(1000px 500px at 80% 20%, rgba(27, 61, 140, 0.25), transparent 60%),
+                        radial-gradient(800px 400px at 0% 100%, rgba(244, 121, 32, 0.25), transparent 60%),
+                        linear-gradient(135deg, #ffffff 0%, rgba(244, 121, 32, 0.35) 35%, rgba(27, 61, 140, 0.35) 100%);
             pointer-events: none;
         }
 
@@ -241,14 +241,16 @@
         }
 
         .btn-primary-welcome {
-            background: linear-gradient(135deg, #007bff, #0056b3);
+            background: linear-gradient(135deg, #1B3D8C, #143170);
             color: white;
-            box-shadow: 0 6px 18px rgba(0, 123, 255, 0.35);
+            box-shadow: 0 6px 18px rgba(27, 61, 140, 0.35);
         }
 
         .btn-primary-welcome:hover {
             transform: translateY(-1px);
-            box-shadow: 0 10px 24px rgba(0, 123, 255, 0.45);
+            background: #D4620D;
+            color: white;
+            box-shadow: 0 10px 24px rgba(212, 98, 13, 0.45);
         }
 
         .btn-secondary-welcome {
@@ -259,7 +261,9 @@
 
         .btn-secondary-welcome:hover {
             transform: translateY(-1px);
-            box-shadow: 0 10px 24px rgba(108, 117, 125, 0.45);
+            background: #D4620D;
+            color: white;
+            box-shadow: 0 10px 24px rgba(212, 98, 13, 0.45);
         }
 
         .hero-art {
@@ -322,7 +326,7 @@
         }
 
         .feature i {
-            color: #007bff;
+            color: #1B3D8C;
             font-size: 1.25rem;
             margin-top: 4px;
         }
@@ -383,15 +387,15 @@
 
         .form-control:focus {
             outline: none;
-            border-color: #3498db;
-            box-shadow: 0 0 0 0.25rem rgba(52, 152, 219, 0.15);
+            border-color: #1B3D8C;
+            box-shadow: 0 0 0 0.25rem rgba(27, 61, 140, 0.15);
             background: white;
         }
 
         .btn-form {
             width: 100%;
             padding: 15px;
-            background: linear-gradient(45deg, #3498db, #2980b9);
+            background: linear-gradient(45deg, #1B3D8C, #143170);
             color: white;
             border: none;
             border-radius: 12px;
@@ -404,7 +408,9 @@
 
         .btn-form:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(52, 152, 219, 0.4);
+            background: #D4620D;
+            color: white;
+            box-shadow: 0 8px 20px rgba(212, 98, 13, 0.4);
         }
 
         .form-links {
@@ -412,14 +418,14 @@
         }
 
         .form-links a {
-            color: #3498db;
+            color: #1B3D8C;
             text-decoration: none;
             font-weight: 500;
             transition: all 0.3s ease;
         }
 
         .form-links a:hover {
-            color: #2980b9;
+            color: #F47920;
             text-decoration: underline;
         }
 
@@ -599,7 +605,7 @@
                                     </div>
                                 </div> {% endcomment %}
                             <div class="hero-text" style="text-align: center; max-width: 800px; margin: 0 auto;">
-                                <h1>Welcome to ADL<br><span style="color: #3498db;">Automated Data Loader</span></h1>
+                                <h1>Welcome to ADL<br><span style="color: #1B3D8C;">Automated Data Loader</span></h1>
                                 <p>Streamline your credit bureau data processing with intelligent automation. Transform, validate, and format your data with enterprise-grade accuracy.</p>
                                 <div class="hero-ctas" style="justify-content: center;">
                                     <a href="#" onclick="smoothScrollToSection(event, 'login')" class="btn-welcome btn-primary-welcome">
@@ -767,6 +773,22 @@
                             {% endif %}
                         </div>
                         
+                        <div class="form-group">
+                            <label for="id_email" class="form-label">
+                                <i class="fas fa-envelope me-2"></i>Email Address
+                            </label>
+                            <input type="email" class="form-control" id="id_email" name="email" 
+                                   placeholder="Enter your email address" required>
+                            <small class="text-muted">Reports will be sent to this email after processing.</small>
+                            {% if form.email.errors %}
+                                <div class="text-danger small mt-1">
+                                    {% for error in form.email.errors %}
+                                        <div>{{ error }}</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+
                         <div class="form-group">
                             <label for="id_password1" class="form-label">
                                 <i class="fas fa-lock me-2"></i>Password

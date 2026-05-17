@@ -1,3 +1,5 @@
+import math
+import re
 import os
 import logging
 import glob
@@ -5,11 +7,11 @@ import shutil
 import json
 import time
 import gc
-
 logger = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
 import openpyxl
+from rapidfuzz import fuzz as rfuzz, process as rfuzz_process
 from datetime import datetime
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
@@ -21,11 +23,11 @@ from .exceptions import (
 )
 from .map import (
     consu_mapping, comm_mapping, credit_mapping, guar_mapping, prin_mapping,
-    consumer_merged_mapping, commercial_merged_mapping
+    consumer_merged_mapping, commercial_merged_mapping, sheet_name_mappings
 )
 from .views import (
     # Import all the processing functions
-    ensure_all_sheets_exist, clean_sheet_name, convert_numpy,
+    ensure_all_sheets_exist, validate_required_sheets_present, clean_sheet_name, convert_numpy,
     remove_special_characters, make_column_names_unique,
     preprocess_tenor_from_headers, preprocess_arrears_from_headers, rename_columns_with_fuzzy_rapidfuzz,
     process_dates, process_names, replace_ampersands, process_special_characters,
@@ -40,10 +42,12 @@ from .views import (
     process_collateral_details, positioninBusiness, trim_strings_to_59,
     remove_duplicates, merge_individual_borrowers, merge_corporate_borrowers,
     split_commercial_entities, split_consumer_entities, reorder_commercial_columns,
-    reorder_consumer_columns, extract_date_from_filename, clean_business_name
-)
-from .header_detection import find_header_row
-
+    reorder_consumer_columns, extract_date_from_filename, clean_business_name,transform_to_commercial,transform_to_consumer
+    )
+from .header_detection import find_header_row, find_header_row_csv, detect_csv_encoding, detect_csv_delimiter
+from .views import build_excel_report
+from django.core.mail import EmailMessage
+from django.conf import settings as django_settings
 
 # Constants for chunked processing
 LARGE_SHEET_THRESHOLD = 50000  # Process sheets with >50k rows in chunks
@@ -622,7 +626,6 @@ def process_large_sheet_chunked(file_path, sheet_name, cleaned_name, chunk_size=
     data_start_row = header_row_1indexed + 1
     
     logger.info(f"[CHUNKED PROCESSING] Header detected at row {header_row} (1-indexed: {header_row_1indexed})")
-    
     # Open workbook in read-only mode for memory efficiency
     workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     sheet = workbook[sheet_name]
@@ -720,6 +723,159 @@ def get_sheet_row_count(file_path, sheet_name):
         return 0
 
 
+def get_sheet_row_count_csv(file_path):
+    """
+    Quickly estimate the row count of a CSV file without loading all data.
+
+    Args:
+        file_path: Path to the CSV file
+
+    Returns:
+        int: Estimated number of data rows (header line not counted)
+    """
+    try:
+        encoding = detect_csv_encoding(file_path)
+        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+            line_count = sum(1 for _ in f)
+        return max(0, line_count - 1)  # Subtract 1 for the header row
+    except Exception as e:
+        logger.warning(f"[CSV ROW COUNT] Error getting row count for '{file_path}': {e}")
+        return 0
+
+
+def resolve_csv_sheet_type(filename_stem):
+    """
+    Map a CSV filename stem to a canonical sheet type name.
+
+    Uses the same sheet_name_mappings as Excel sheet tab processing, with
+    a substring-match fallback and a rapidfuzz fuzzy-match final fallback.
+
+    Examples:
+        "CreditInformation_May2026"  -> "creditinformation"
+        "individual_borrowers_q1"    -> "individualborrowertemplate"
+        "corporate_template"         -> "corporateborrowertemplate"
+        "ConsumerMerged"             -> "consumermerged"
+
+    Args:
+        filename_stem: Filename without the .csv extension
+
+    Returns:
+        str: Canonical sheet type name (e.g. "creditinformation") or the
+             cleaned stem if no match is found.
+    """
+    # Clean exactly as clean_sheet_name does
+    cleaned = re.sub(r'[^a-zA-Z0-9]', '', filename_stem).lower()
+
+    # 1. Exact match in mappings
+    if cleaned in sheet_name_mappings:
+        return sheet_name_mappings[cleaned]
+
+    # 2. Substring match: find the longest known key that appears in cleaned
+    matches = [
+        (key, canonical)
+        for key, canonical in sheet_name_mappings.items()
+        if key in cleaned
+    ]
+    if matches:
+        best_key, best_canonical = max(matches, key=lambda x: len(x[0]))
+        logger.info(
+            f"[CSV NAME RESOLUTION] '{filename_stem}' -> '{best_canonical}' "
+            f"(substring match on '{best_key}')"
+        )
+        return best_canonical
+
+    # 3. Fuzzy fallback using rapidfuzz
+    result = rfuzz_process.extractOne(
+        cleaned,
+        list(sheet_name_mappings.keys()),
+        scorer=rfuzz.partial_ratio,
+        score_cutoff=70,
+    )
+    if result:
+        matched_key = result[0]
+        canonical = sheet_name_mappings[matched_key]
+        logger.info(
+            f"[CSV NAME RESOLUTION] '{filename_stem}' -> '{canonical}' "
+            f"(fuzzy match on '{matched_key}', score {result[1]:.0f})"
+        )
+        return canonical
+
+    logger.warning(
+        f"[CSV NAME RESOLUTION] Could not map '{filename_stem}' to a known sheet type; "
+        f"using cleaned name '{cleaned}' (will likely fail downstream validation)"
+    )
+    return cleaned
+
+
+def process_large_csv_chunked(file_path, cleaned_name, chunk_size=None, cutoff_date=None):
+    """
+    Process a large CSV file in chunks to avoid memory issues.
+
+    Mirrors the behaviour of process_large_sheet_chunked() but reads from a
+    CSV file using pandas chunked iteration instead of openpyxl streaming.
+
+    Args:
+        file_path: Path to the CSV file
+        cleaned_name: Canonical sheet type name for column mapping
+        chunk_size: Number of rows per chunk (default CHUNK_SIZE)
+        cutoff_date: Optional datetime for date-range validation
+
+    Returns:
+        Fully processed DataFrame
+    """
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+
+    logger.info(
+        f"[CSV CHUNKED] Processing large CSV '{os.path.basename(file_path)}' "
+        f"as '{cleaned_name}' in chunks of {chunk_size} rows"
+    )
+
+    header_row = find_header_row_csv(file_path)
+    logger.info(f"[CSV CHUNKED] Header detected at row {header_row}")
+
+    encoding = detect_csv_encoding(file_path)
+    sep = detect_csv_delimiter(file_path, encoding=encoding)
+    processed_chunks = []
+
+    reader = pd.read_csv(
+        file_path,
+        header=header_row,
+        sep=sep,
+        chunksize=chunk_size,
+        dtype=object,
+        na_filter=False,
+        encoding=encoding,
+        encoding_errors='replace',
+    )
+
+    for chunk_number, chunk_df in enumerate(reader, start=1):
+        logger.info(f"[CSV CHUNKED] Processing chunk {chunk_number} ({len(chunk_df)} rows)")
+
+        for col in chunk_df.columns:
+            chunk_df[col] = chunk_df[col].astype(str)
+            chunk_df[col] = chunk_df[col].replace({'nan': '', 'None': '', 'NaN': ''})
+
+        processed_chunk = process_single_sheet(chunk_df, cleaned_name, cutoff_date=cutoff_date)
+        processed_chunks.append(processed_chunk)
+
+        del chunk_df
+        gc.collect()
+
+    if not processed_chunks:
+        logger.warning(f"[CSV CHUNKED] No data chunks processed for '{file_path}'")
+        return pd.DataFrame()
+
+    logger.info(f"[CSV CHUNKED] Combining {len(processed_chunks)} chunks")
+    final_result = pd.concat(processed_chunks, ignore_index=True)
+
+    del processed_chunks
+    gc.collect()
+
+    logger.info(f"[CSV CHUNKED] Completed: {len(final_result)} total rows")
+    return final_result
+
+
 def process_uploaded_file(upload_session_id, file_paths, original_filenames, 
                           subscriber_id, subscriber_name, user_id,
                           reporting_month=None, reporting_year=None):
@@ -782,30 +938,52 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
         
         for file_idx, file_path in enumerate(file_paths):
             logger.info(f"[ASYNC TASK] Analyzing file {file_idx + 1}/{file_count}: {original_filenames[file_idx]}")
-            
-            # Determine engine based on file extension (.xlsb requires pyxlsb)
-            engine = 'pyxlsb' if file_path.lower().endswith('.xlsb') else None
-            with pd.ExcelFile(file_path, engine=engine) as excel_file:
-                sheet_names = excel_file.sheet_names
-            
-            logger.info(f"[ASYNC TASK] Found {len(sheet_names)} sheets in workbook")
-            
+
+            is_csv = file_path.lower().endswith(('.csv', '.txt'))
             all_sheet_info[file_path] = {}
-            for sheet_name in sheet_names:
-                row_count = get_sheet_row_count(file_path, sheet_name)
+
+            if is_csv:
+                # For CSV files the sheet type is inferred from the original filename
+                original_filename = original_filenames[file_idx]
+                filename_stem = os.path.splitext(original_filename)[0]
+                cleaned_name = resolve_csv_sheet_type(filename_stem)
+                sheet_name = filename_stem  # use filename stem as the pseudo sheet name
+                row_count = get_sheet_row_count_csv(file_path)
                 all_sheet_info[file_path][sheet_name] = {
                     'row_count': row_count,
                     'use_chunking': row_count > LARGE_SHEET_THRESHOLD,
-                    'cleaned_name': clean_sheet_name(sheet_name)
+                    'cleaned_name': cleaned_name,
+                    'is_csv': True,
                 }
                 combined_sheet_names.append(sheet_name)
-                
-                if row_count > LARGE_SHEET_THRESHOLD:
-                    logger.info(f"[ASYNC TASK] Large sheet detected: '{sheet_name}' ({row_count:,} rows) - will use chunked processing")
-                else:
-                    logger.info(f"[ASYNC TASK] Normal sheet: '{sheet_name}' ({row_count:,} rows)")
-        
-        upload_session.update_progress('upload_validation', 10, 'Excel file(s) analyzed, loading sheets...')
+                logger.info(
+                    f"[ASYNC TASK] CSV: '{sheet_name}' → type '{cleaned_name}' "
+                    f"({'large' if row_count > LARGE_SHEET_THRESHOLD else 'normal'}, {row_count:,} rows)"
+                )
+            else:
+                # Determine engine based on file extension (.xlsb requires pyxlsb)
+                engine = 'pyxlsb' if file_path.lower().endswith('.xlsb') else None
+                with pd.ExcelFile(file_path, engine=engine) as excel_file:
+                    sheet_names = excel_file.sheet_names
+
+                logger.info(f"[ASYNC TASK] Found {len(sheet_names)} sheets in workbook")
+
+                for sheet_name in sheet_names:
+                    row_count = get_sheet_row_count(file_path, sheet_name)
+                    all_sheet_info[file_path][sheet_name] = {
+                        'row_count': row_count,
+                        'use_chunking': row_count > LARGE_SHEET_THRESHOLD,
+                        'cleaned_name': clean_sheet_name(sheet_name),
+                        'is_csv': False,
+                    }
+                    combined_sheet_names.append(sheet_name)
+
+                    if row_count > LARGE_SHEET_THRESHOLD:
+                        logger.info(f"[ASYNC TASK] Large sheet detected: '{sheet_name}' ({row_count:,} rows) - will use chunked processing")
+                    else:
+                        logger.info(f"[ASYNC TASK] Normal sheet: '{sheet_name}' ({row_count:,} rows)")
+
+        upload_session.update_progress('upload_validation', 10, 'File(s) analyzed, loading sheets...')
         
         # ========================================================================
         # MULTI-FILE MERGE: Collect all sheets by type, preprocess, then concatenate
@@ -861,13 +1039,20 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
                     logger.info(f"[ASYNC TASK] Large sheet '{sheet_name}' from {os.path.basename(file_path)} - will process in chunks")
                 else:
                     # Load the sheet (normal-sized)
-                    header_row = find_header_row(file_path, sheet_name)
-                    logger.info(f"[ASYNC TASK] Loading '{sheet_name}' from {os.path.basename(file_path)} with header at row {header_row}")
-                    
-                    # Determine engine based on file extension (.xlsb requires pyxlsb)
-                    engine = 'pyxlsb' if file_path.lower().endswith('.xlsb') else None
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, na_filter=False, dtype=object, engine=engine)
-                    
+                    if info.get('is_csv', False):
+                        header_row = find_header_row_csv(file_path)
+                        logger.info(f"[ASYNC TASK] Loading CSV '{sheet_name}' from {os.path.basename(file_path)} with header at row {header_row}")
+                        _enc = detect_csv_encoding(file_path)
+                        _sep = detect_csv_delimiter(file_path, encoding=_enc)
+                        df = pd.read_csv(file_path, header=header_row, sep=_sep, na_filter=False, dtype=object, encoding=_enc, encoding_errors='replace')
+                    else:
+                        header_row = find_header_row(file_path, sheet_name)
+                        logger.info(f"[ASYNC TASK] Loading '{sheet_name}' from {os.path.basename(file_path)} with header at row {header_row}")
+                        # Determine engine based on file extension (.xlsb requires pyxlsb)
+                        engine = 'pyxlsb' if file_path.lower().endswith('.xlsb') else None
+                        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, na_filter=False, dtype=object, engine=engine)
+
+
                     # Convert all columns to string and clean nulls
                     for col in df.columns:
                         df[col] = df[col].astype(str)
@@ -923,6 +1108,29 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
                 'valid_records': 0
             })
         
+        # Validate required sheets are present before processing
+        sheets_valid, sheets_error = validate_required_sheets_present(xds, set(sheets_by_type.keys()))
+        if not sheets_valid:
+            logger.info(f"[[SHEET VALIDATION] ❌ Missing required sheets: {sheets_error}")
+            upload_session.update_progress(
+                'upload_validation',
+                0,
+                'Validation Failed: Required sheets are missing'
+            )
+            upload_session.activity_log = json.dumps({
+                'validation_error': sheets_error,
+                'timestamp': dt.now().isoformat()
+            })
+            upload_session.mark_failed(sheets_error)
+            upload_session.save()
+            for fp in file_paths:
+                if os.path.exists(fp):
+                    try:
+                        os.remove(fp)
+                    except Exception:
+                        pass
+            return
+
         # Ensure all required sheets exist
         processed_sheets = ensure_all_sheets_exist(xds)
         
@@ -989,14 +1197,22 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
                     
                     logger.info(f"[MULTI-FILE CHUNKED] Processing large sheet '{entry_sheet_name}' from {os.path.basename(entry_file_path)}")
                     
-                    # Process large sheet in chunks
-                    processed_chunk_df = process_large_sheet_chunked(
-                        entry_file_path, 
-                        entry_sheet_name, 
-                        cleaned_name, 
-                        chunk_size=CHUNK_SIZE,
-                        cutoff_date=cutoff_date
-                    )
+                    # Process large sheet in chunks (CSV or Excel path)
+                    if entry['info'].get('is_csv', False):
+                        processed_chunk_df = process_large_csv_chunked(
+                            entry_file_path,
+                            cleaned_name,
+                            chunk_size=CHUNK_SIZE,
+                            cutoff_date=cutoff_date
+                        )
+                    else:
+                        processed_chunk_df = process_large_sheet_chunked(
+                            entry_file_path,
+                            entry_sheet_name,
+                            cleaned_name,
+                            chunk_size=CHUNK_SIZE,
+                            cutoff_date=cutoff_date
+                        )
                     
                     if not processed_chunk_df.empty:
                         all_preprocessed.append(processed_chunk_df)
@@ -1038,13 +1254,22 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
                     f'Processing large sheet {sheet_name} ({chunk_info["row_count"]:,} rows) in chunks...'
                 )
                 
-                processed_df = process_large_sheet_chunked(
-                    sheet_file_path, 
-                    sheet_name, 
-                    cleaned_name, 
-                    chunk_size=CHUNK_SIZE,
-                    cutoff_date=cutoff_date
-                )
+                sheet_info_entry = all_sheet_info.get(sheet_file_path, {}).get(sheet_name, {})
+                if sheet_info_entry.get('is_csv', False):
+                    processed_df = process_large_csv_chunked(
+                        sheet_file_path,
+                        cleaned_name,
+                        chunk_size=CHUNK_SIZE,
+                        cutoff_date=cutoff_date
+                    )
+                else:
+                    processed_df = process_large_sheet_chunked(
+                        sheet_file_path,
+                        sheet_name,
+                        cleaned_name,
+                        chunk_size=CHUNK_SIZE,
+                        cutoff_date=cutoff_date
+                    )
                 
                 processed_sheets[cleaned_name] = processed_df
                 
@@ -1259,9 +1484,21 @@ def process_uploaded_file(upload_session_id, file_paths, original_filenames,
         save_to_parquet(indi, upload_session_id, 'merged_individual')
         save_to_parquet(corpo, upload_session_id, 'merged_corporate')
         
-        # Split commercial/consumer entities for human verification
-        split_indi, split_candidates_commercial = split_commercial_entities(indi)
-        split_corpo, split_candidates_consumer = split_consumer_entities(corpo)
+        # Split commercial/consumer entities — each returns (remaining, auto_move, manual_review)
+        split_indi, auto_commercial, split_candidates_commercial = split_commercial_entities(indi)
+        split_corpo, auto_consumer, split_candidates_consumer = split_consumer_entities(corpo)
+
+        # Auto-merge high-confidence splits directly into the destination bucket (no UI needed)
+        from .map import guarantor_columns_to_clear, principal_officer_columns_to_clear
+        if not auto_commercial.empty:
+            confirmed_commercial = transform_to_commercial(auto_commercial, columns_to_clear=guarantor_columns_to_clear)
+            logger.info(f"[AUTO-SPLIT] Auto-moving {len(confirmed_commercial)} commercial records directly to corporate (skipping UI)")
+            split_corpo = pd.concat([split_corpo, confirmed_commercial], ignore_index=True)
+
+        if not auto_consumer.empty:
+            confirmed_consumer = transform_to_consumer(auto_consumer, columns_to_clear=principal_officer_columns_to_clear)
+            logger.info(f"[AUTO-SPLIT] Auto-moving {len(confirmed_consumer)} consumer records directly to individual (skipping UI)")
+            split_indi = pd.concat([split_indi, confirmed_consumer], ignore_index=True)
         
         # Clear original merged data from memory (keep only split versions)
         del indi, corpo
@@ -1840,17 +2077,15 @@ def process_post_verification(upload_session_id, use_parquet=True,
         )
         
         # ========================================================================
-        # EMAIL REPORT: Send analysis report to subscriber email
+        # EMAIL REPORT: Send analysis report to the user who uploaded the file
         # ========================================================================
         try:
-            from .models import SubscriberEmail
-            from .views import build_excel_report
-            from django.core.mail import EmailMessage
-            from django.conf import settings as django_settings
+
             
-            subscriber_email = SubscriberEmail.get_email(upload_session.subscriber_id)
-            if subscriber_email:
-                logger.info(f"[EMAIL REPORT] Sending report to {subscriber_email} for session {upload_session_id}")
+            user_email = upload_session.user.email if upload_session.user else None
+            if user_email:
+                user_display = upload_session.user.get_full_name() or upload_session.user.username
+                logger.info(f"[EMAIL REPORT] Sending report to {user_email} for session {upload_session_id}")
                 
                 # Build report (reuses same function as portal download)
                 buffer, report_filename = build_excel_report(upload_session, user=upload_session.user)
@@ -1858,8 +2093,8 @@ def process_post_verification(upload_session_id, use_parquet=True,
                 # Compose email
                 subject = f"FCB Processing Report - {subscriber_name} - {final_month}/{final_year}" if final_month and final_year else f"FCB Processing Report - {subscriber_name}"
                 body = (
-                    f"Dear {subscriber_name},\n\n"
-                    f"Your data processing has been completed successfully.\n\n"
+                    f"Dear {user_display},\n\n"
+                    f"Your data processing for {subscriber_name} has been completed successfully.\n\n"
                     f"Processing Summary:\n"
                     f"  - Individual Records: {actual_individual_count:,}\n"
                     f"  - Corporate Records: {actual_corporate_count:,}\n"
@@ -1873,7 +2108,7 @@ def process_post_verification(upload_session_id, use_parquet=True,
                     subject=subject,
                     body=body,
                     from_email=django_settings.DEFAULT_FROM_EMAIL,
-                    to=[subscriber_email],
+                    to=[user_email],
                 )
                 
                 # Attach report (check size < 20MB)
@@ -1882,14 +2117,14 @@ def process_post_verification(upload_session_id, use_parquet=True,
                     email.attach(report_filename, report_bytes, 
                                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                     email.send(fail_silently=False)
-                    logger.info(f"[EMAIL REPORT] Report sent successfully to {subscriber_email}")
+                    logger.info(f"[EMAIL REPORT] Report sent successfully to {user_email}")
                 else:
                     logger.info(f"[EMAIL REPORT] Report too large ({len(report_bytes)} bytes), skipping attachment")
             else:
-                logger.info(f"[EMAIL REPORT] No email configured for subscriber {upload_session.subscriber_id}, skipping")
+                logger.info(f"[EMAIL REPORT] No email set for user {upload_session.user}, skipping")
         except Exception as email_error:
             # Email failure should NEVER break the processing pipeline
-            logger.info(f"[EMAIL REPORT ERROR] Failed to send email: {email_error}")
+            logger.error(f"[EMAIL REPORT ERROR] Failed to send email: {email_error}")
         
         # ========================================================================
         # CLEANUP: Delete temporary Parquet files after successful completion
