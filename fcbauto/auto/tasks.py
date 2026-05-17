@@ -2158,3 +2158,67 @@ def process_post_verification(upload_session_id, use_parquet=True,
             pass
         
         raise
+
+
+def detect_stale_sessions():
+    """
+    Periodic task run by Django Q cluster to detect and mark stale upload sessions.
+
+    A session is considered stale if it has been stuck in 'processing' status for
+    more than 6 hours since processing_started_at, or stuck in 'pending' status
+    for more than 6 hours since uploaded_at (i.e. the cluster was never picked it up).
+
+    This runs every 15 minutes via a Django Q schedule registered by the
+    setup_stale_session_schedule management command.
+    """
+    from django.utils import timezone
+    from datetime import timedelta
+
+    STALE_THRESHOLD_HOURS = 6
+    threshold = timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS)
+    stale_message = (
+        "Processing timed out after 6 hours. "
+        "The session was automatically marked as failed. Please re-upload the file."
+    )
+
+    # Sessions stuck in 'processing'
+    stale_processing = UploadSession.objects.filter(
+        status='processing',
+        processing_started_at__lt=threshold,
+    )
+    processing_count = stale_processing.count()
+    if processing_count:
+        for session in stale_processing:
+            try:
+                session.mark_failed(error_message=stale_message)
+                logger.warning(
+                    f"[STALE DETECTION] Marked session {session.id} "
+                    f"(user={session.user}, file={session.original_filename}) "
+                    f"as failed — stuck in 'processing' since {session.processing_started_at}"
+                )
+            except Exception as e:
+                logger.error(f"[STALE DETECTION] Failed to mark session {session.id}: {e}")
+
+    # Sessions stuck in 'pending' (cluster never picked them up)
+    stale_pending = UploadSession.objects.filter(
+        status='pending',
+        uploaded_at__lt=threshold,
+    )
+    pending_count = stale_pending.count()
+    if pending_count:
+        for session in stale_pending:
+            try:
+                session.mark_failed(error_message=stale_message)
+                logger.warning(
+                    f"[STALE DETECTION] Marked session {session.id} "
+                    f"(user={session.user}, file={session.original_filename}) "
+                    f"as failed — stuck in 'pending' since {session.uploaded_at}"
+                )
+            except Exception as e:
+                logger.error(f"[STALE DETECTION] Failed to mark session {session.id}: {e}")
+
+    total = processing_count + pending_count
+    if total:
+        logger.warning(f"[STALE DETECTION] Marked {total} stale session(s) as failed.")
+    else:
+        logger.debug("[STALE DETECTION] No stale sessions found.")
